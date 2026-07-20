@@ -1,0 +1,278 @@
+# Instincts generated from https://github.com/sparlit/mtftrader
+# Generated: 2026-07-20T13:43:43.934Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: mtftrader-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/sparlit/mtftrader
+---
+
+# Mtftrader Commit Length
+
+## Action
+
+Write detailed commit messages (~108 characters for first line)
+
+## Evidence
+
+- Average commit message length: 108 chars
+- Based on 1 commits
+
+---
+id: mtftrader-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/sparlit/mtftrader
+---
+
+# Mtftrader Naming Files
+
+## Action
+
+Use PascalCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: PascalCase
+
+---
+id: mtftrader-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/sparlit/mtftrader
+---
+
+# Mtftrader Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: mtftrader-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/sparlit/mtftrader
+---
+
+# Mtftrader Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: mtftrader-test-separate
+trigger: "when writing tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/sparlit/mtftrader
+---
+
+# Mtftrader Test Separate
+
+## Action
+
+Place tests in the tests/ or __tests__/ directory, mirroring src structure
+
+## Evidence
+
+- Separate test directory pattern detected
+- Tests live in dedicated test folders
+
+---
+id: mtftrader-instinct-file-naming
+trigger: "When creating a new Python file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: sparlit/mtftrader
+---
+
+# Mtftrader Instinct File Naming
+
+## Action
+
+Name the file using PascalCase (e.g., MyModule.py)
+
+## Evidence
+
+- Pattern in namingConventions.files
+
+---
+id: mtftrader-instinct-function-naming
+trigger: "When defining a new Python function"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: sparlit/mtftrader
+---
+
+# Mtftrader Instinct Function Naming
+
+## Action
+
+Use camelCase for the function name (e.g., processData)
+
+## Evidence
+
+- Pattern in namingConventions.functions
+
+---
+id: mtftrader-instinct-class-naming
+trigger: "When defining a new Python class"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: sparlit/mtftrader
+---
+
+# Mtftrader Instinct Class Naming
+
+## Action
+
+Use PascalCase for the class name (e.g., DataHandler)
+
+## Evidence
+
+- Pattern in namingConventions.classes
+
+---
+id: mtftrader-instinct-constant-naming
+trigger: "When defining a constant in Python"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: sparlit/mtftrader
+---
+
+# Mtftrader Instinct Constant Naming
+
+## Action
+
+Use SCREAMING_SNAKE_CASE for the constant name (e.g., MAX_SIZE)
+
+## Evidence
+
+- Pattern in namingConventions.constants
+
+---
+id: mtftrader-instinct-import-style
+trigger: "When importing modules in Python"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: sparlit/mtftrader
+---
+
+# Mtftrader Instinct Import Style
+
+## Action
+
+Use relative imports
+
+## Evidence
+
+- Pattern in importStyle
+
+---
+id: mtftrader-instinct-export-style
+trigger: "When exporting from a Python module"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: sparlit/mtftrader
+---
+
+# Mtftrader Instinct Export Style
+
+## Action
+
+Use named exports
+
+## Evidence
+
+- Pattern in exportStyle
+
+---
+id: mtftrader-instinct-test-location
+trigger: "When adding or updating tests"
+confidence: 0.9
+domain: testing
+source: repo-analysis
+source_repo: sparlit/mtftrader
+---
+
+# Mtftrader Instinct Test Location
+
+## Action
+
+Place test files in a separate directory from source code
+
+## Evidence
+
+- Pattern in architecture.folderStructure.testLocation
+
+---
+id: mtftrader-instinct-folder-structure
+trigger: "When adding new code for a supported language (MQL5, Rust, Python)"
+confidence: 0.9
+domain: architecture
+source: repo-analysis
+source_repo: sparlit/mtftrader
+---
+
+# Mtftrader Instinct Folder Structure
+
+## Action
+
+Place the code in its respective top-level folder (e.g., python/, rust/, MQL5/)
+
+## Evidence
+
+- Pattern in architecture.folderStructure.commonFolders
+
+---
+id: mtftrader-instinct-commit-format
+trigger: "When writing a git commit message"
+confidence: 0.7
+domain: git
+source: repo-analysis
+source_repo: sparlit/mtftrader
+---
+
+# Mtftrader Instinct Commit Format
+
+## Action
+
+Use a freeform commit message without a required prefix
+
+## Evidence
+
+- Pattern in commits.type
+- Pattern in commits.prefixes
+
