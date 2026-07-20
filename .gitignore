@@ -1,0 +1,9 @@
+# Rust target directory
+rust/target/
+
+# Python caching
+__pycache__/
+*.pyc
+
+# Local logs
+python/logs/
