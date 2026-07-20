@@ -16,7 +16,23 @@ The platform is designed around 10 decoupled "Brains":
 9. **Portfolio Brain**: Aggregates multi-asset correlations and cross-asset metrics.
 10. **Supervisor Brain**: Ensures health monitoring, telemetry, and secure API links.
 
-## Quick Start
+## Quick Start (Single-Word Controls)
+
+To make compilation and starting the platform effortless, use the custom `itip` control script:
+
+### 1. Installation
+Build all dependencies, packages, and compile components:
+```bash
+./itip install
+```
+
+### 2. Launch Platform
+Start the background services and run high-performance analytical simulations:
+```bash
+./itip start
+```
+
+## Manual Instructions
 
 ### 1. MT5 EA Setup
 - Place the contents of `MQL5/Experts/` inside your MT5 Terminal's `MQL5/Experts/` directory.

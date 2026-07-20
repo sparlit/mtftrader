@@ -1,0 +1,54 @@
+#!/bin/bash
+# ITIP Unified Control Script
+
+set -e
+
+COMMAND=$1
+
+install() {
+    echo "==========================================="
+    echo "Installing ITIP v1.0 Dependencies..."
+    echo "==========================================="
+
+    # Python setup
+    echo "--> Installing Python requirements..."
+    python3 -m pip install fastapi uvicorn pydantic
+
+    # Rust build
+    echo "--> Compiling Rust High-Performance Engine..."
+    cargo build --manifest-path rust/Cargo.toml --release
+
+    echo "--> Installation Completed Successfully!"
+}
+
+start() {
+    echo "==========================================="
+    echo "Starting ITIP v1.0 Platform..."
+    echo "==========================================="
+
+    # Start python server in background
+    echo "--> Launching Python FastAPI Server on port 5555..."
+    python3 python/server.py > python_server.log 2>&1 &
+    PYTHON_PID=$!
+
+    # Run Rust engine demo
+    echo "--> Running Rust High-Performance Engine Risk Simulation..."
+    cargo run --manifest-path rust/Cargo.toml --release
+
+    echo "--> Platform started. Python FastAPI is running in the background (PID: $PYTHON_PID)."
+    echo "--> Log output is available at python_server.log"
+}
+
+case "$COMMAND" in
+    install)
+        install
+        ;;
+    start)
+        start
+        ;;
+    *)
+        echo "Usage: ./itip {install|start}"
+        echo "  install : Installs all python packages and compiles the Rust engine"
+        echo "  start   : Starts the FastAPI backend and runs the Rust simulation"
+        ;;
+esac
