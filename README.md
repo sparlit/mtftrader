@@ -20,16 +20,28 @@ The platform is designed around 10 decoupled "Brains":
 
 To make compilation and starting the platform effortless, use the custom `itip` control script:
 
-### 1. Installation
+### Linux / macOS
+#### 1. Installation
 Build all dependencies, packages, and compile components:
 ```bash
 ./itip install
 ```
 
-### 2. Launch Platform
-Start the background services and run high-performance analytical simulations:
+#### 2. Launch Platform
 ```bash
 ./itip start
+```
+
+### Windows OS
+#### 1. Installation
+Build all dependencies and compile components on Windows:
+```cmd
+itip install
+```
+
+#### 2. Launch Platform
+```cmd
+itip start
 ```
 
 ## Manual Instructions
