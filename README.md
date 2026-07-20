@@ -44,6 +44,9 @@ itip install
 itip start
 ```
 
+Once started, the interactive premium **ITIP Web Dashboard** is accessible locally at:
+👉 **[http://localhost:5555/dashboard](http://localhost:5555/dashboard)**
+
 ## Manual Instructions
 
 ### 1. MT5 EA Setup
@@ -68,6 +71,7 @@ itip start
   ```
 
 ## Features Included
+- **Integrated Web Dashboard**: Clean Tailwind-driven web interface for viewing live pipeline signals, system metrics, and triggering interactive Monte Carlo model simulations.
 - Multi-timeframe evaluation with precise candle countdown timers.
 - Interactive Trade Panel with GUI Action buttons (BUY, SELL, Partial Close, Breakeven/Trailing Stop).
 - Built-in Drawdown Circuit Breakers to secure account equity.
