@@ -247,6 +247,15 @@ class TestStats:
         assert body["total_signals"] == 1
         assert body["by_direction"] == {"UNKNOWN": 1}
         assert body["average_confidence"] == 0.0
+        assert body["latest_timestamp"] is None
+
+    def test_latest_timestamp_ignores_entries_without_one(self, client, server):
+        with open(server.JSON_PATH, "w") as f:
+            json.dump([{"timestamp": "2024-01-01 00:00:00"}, {"symbol": "EURUSD"}], f)
+
+        assert client.get("/api/stats").json()["latest_timestamp"] == (
+            "2024-01-01 00:00:00"
+        )
 
 
 class TestCorrelation:

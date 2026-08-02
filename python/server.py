@@ -127,7 +127,10 @@ def get_signal_stats():
     by_direction: Dict[str, int] = {}
     by_symbol: Dict[str, int] = {}
     confidences: List[float] = []
+    latest_timestamp = None
     for signal in signals:
+        latest_timestamp = signal.get("timestamp", latest_timestamp)
+
         direction = str(signal.get("direction", "UNKNOWN")).upper()
         by_direction[direction] = by_direction.get(direction, 0) + 1
 
@@ -145,7 +148,7 @@ def get_signal_stats():
         "average_confidence": (
             round(sum(confidences) / len(confidences), 2) if confidences else 0.0
         ),
-        "latest_timestamp": signals[-1].get("timestamp") if signals else None,
+        "latest_timestamp": latest_timestamp,
     }
 
 @app.get("/api/correlation")
