@@ -25,12 +25,27 @@ private:
    color m_bearColor;
    color m_accentColor;
 
+   // Creates the object if missing; returns false (and logs) when the terminal refuses it.
+   bool EnsureObject(string objName, ENUM_OBJECT type)
+   {
+      if(ObjectFind(0, objName) >= 0) return true;
+
+      ResetLastError();
+      if(!ObjectCreate(0, objName, type, 0, 0, 0))
+      {
+         PrintFormat("DashboardBrain: Could not create chart object %s of type %d (error %d).", objName, type, GetLastError());
+         return false;
+      }
+      return true;
+   }
+
    void CreateLabel(string name, int x, int y, string text, int fontSize, color textColor, ENUM_ANCHOR_POINT anchor = ANCHOR_LEFT_UPPER)
    {
       string objName = m_prefix + name;
-      if(ObjectFind(0, objName) < 0)
+      bool created = ObjectFind(0, objName) < 0;
+      if(!EnsureObject(objName, OBJ_LABEL)) return;
+      if(created)
       {
-         ObjectCreate(0, objName, OBJ_LABEL, 0, 0, 0);
          ObjectSetInteger(0, objName, OBJPROP_XDISTANCE, x);
          ObjectSetInteger(0, objName, OBJPROP_YDISTANCE, y);
          ObjectSetString(0, objName, OBJPROP_FONT, "Segoe UI");
@@ -47,9 +62,10 @@ private:
    void CreateRect(string name, int x1, int y1, int x2, int y2, color bg, color border)
    {
       string objName = m_prefix + name;
-      if(ObjectFind(0, objName) < 0)
+      bool created = ObjectFind(0, objName) < 0;
+      if(!EnsureObject(objName, OBJ_RECTANGLE_LABEL)) return;
+      if(created)
       {
-         ObjectCreate(0, objName, OBJ_RECTANGLE_LABEL, 0, 0, 0);
          ObjectSetInteger(0, objName, OBJPROP_XDISTANCE, x1);
          ObjectSetInteger(0, objName, OBJPROP_YDISTANCE, y1);
          ObjectSetInteger(0, objName, OBJPROP_XSIZE, x2 - x1);
@@ -68,9 +84,10 @@ private:
    void CreateButton(string name, int x, int y, int w, int h, string text, color bg, color textCol)
    {
       string objName = m_prefix + name;
-      if(ObjectFind(0, objName) < 0)
+      bool created = ObjectFind(0, objName) < 0;
+      if(!EnsureObject(objName, OBJ_BUTTON)) return;
+      if(created)
       {
-         ObjectCreate(0, objName, OBJ_BUTTON, 0, 0, 0);
          ObjectSetInteger(0, objName, OBJPROP_XDISTANCE, x);
          ObjectSetInteger(0, objName, OBJPROP_YDISTANCE, y);
          ObjectSetInteger(0, objName, OBJPROP_XSIZE, w);

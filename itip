@@ -1,22 +1,35 @@
 #!/bin/bash
 # ITIP Unified Control Script
 
-set -e
+set -Eeuo pipefail
 
-COMMAND=$1
+COMMAND=${1:-}
+SERVER_LOG="python_server.log"
+
+fail() {
+    echo "ERROR: $*" >&2
+    exit 1
+}
+
+requireCommand() {
+    command -v "$1" >/dev/null 2>&1 || fail "'$1' is not installed or not on PATH. $2"
+}
 
 install() {
     echo "==========================================="
     echo "Installing ITIP v1.0 Dependencies..."
     echo "==========================================="
 
+    requireCommand python3 "Install Python 3 before running './itip install'."
+    requireCommand cargo "Install the Rust toolchain (https://rustup.rs) before running './itip install'."
+
     # Python setup
     echo "--> Installing Python requirements..."
-    python3 -m pip install fastapi uvicorn pydantic
+    python3 -m pip install fastapi uvicorn pydantic || fail "Failed to install the Python requirements."
 
     # Rust build
     echo "--> Compiling Rust High-Performance Engine..."
-    cargo build --manifest-path rust/Cargo.toml --release
+    cargo build --manifest-path rust/Cargo.toml --release || fail "Failed to compile the Rust engine."
 
     echo "--> Installation Completed Successfully!"
 }
@@ -26,17 +39,32 @@ start() {
     echo "Starting ITIP v1.0 Platform..."
     echo "==========================================="
 
+    requireCommand python3 "Run './itip install' first."
+    requireCommand cargo "Run './itip install' first."
+
     # Start python server in background
     echo "--> Launching Python FastAPI Server on port 5555..."
-    python3 python/server.py > python_server.log 2>&1 &
+    python3 python/server.py > "$SERVER_LOG" 2>&1 &
     PYTHON_PID=$!
+
+    # Surface a server that died on startup (port in use, missing dependency, ...)
+    sleep 2
+    if ! kill -0 "$PYTHON_PID" 2>/dev/null; then
+        echo "--- $SERVER_LOG ---" >&2
+        cat "$SERVER_LOG" >&2 || true
+        fail "The Python FastAPI server exited immediately. See $SERVER_LOG above."
+    fi
 
     # Run Rust engine demo
     echo "--> Running Rust High-Performance Engine Risk Simulation..."
-    cargo run --manifest-path rust/Cargo.toml --release
+    if ! cargo run --manifest-path rust/Cargo.toml --release; then
+        # Do not leave an orphan backend behind when the simulation fails
+        kill "$PYTHON_PID" 2>/dev/null || true
+        fail "The Rust risk simulation failed; the backend has been shut down."
+    fi
 
     echo "--> Platform started. Python FastAPI is running in the background (PID: $PYTHON_PID)."
-    echo "--> Log output is available at python_server.log"
+    echo "--> Log output is available at $SERVER_LOG"
 }
 
 case "$COMMAND" in
@@ -50,5 +78,6 @@ case "$COMMAND" in
         echo "Usage: ./itip {install|start}"
         echo "  install : Installs all python packages and compiles the Rust engine"
         echo "  start   : Starts the FastAPI backend and runs the Rust simulation"
+        exit 1
         ;;
 esac

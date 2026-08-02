@@ -52,6 +52,13 @@ private:
    int m_rsiHandles[8];
    int m_atrHandles[8];
 
+   // Latched warning flags so a persistent data outage is reported once instead of every tick
+   bool m_rsiWarned[8];
+   bool m_atrWarned[8];
+   bool m_barTimeWarned[8];
+   bool m_smcWarned;
+   bool m_handlesReady;
+
    // Order Blocks and FVG lists
    OrderBlock m_obList[];
    FVG m_fvgList[];
@@ -63,8 +70,9 @@ public:
    {
       m_symbol = _Symbol;
       m_cumDelta = 0.0;
+      m_smcWarned = false;
       InitTimeframes();
-      InitHandles();
+      m_handlesReady = InitHandles();
    }
 
    ~CMarketBrain()
@@ -94,17 +102,38 @@ public:
          timeframes[i].atrVal = 0.0;
          timeframes[i].bias = "NEUTRAL";
          timeframes[i].timerStr = "00:00";
+         m_rsiWarned[i] = false;
+         m_atrWarned[i] = false;
+         m_barTimeWarned[i] = false;
       }
    }
 
-   void InitHandles()
+   // Returns false if any indicator handle could not be created.
+   bool InitHandles()
    {
+      bool ok = true;
       for(int i = 0; i < 8; i++)
       {
+         ResetLastError();
          m_rsiHandles[i] = iRSI(m_symbol, timeframes[i].tf, 14, PRICE_CLOSE);
+         if(m_rsiHandles[i] == INVALID_HANDLE)
+         {
+            PrintFormat("MarketBrain: Failed to create RSI handle for %s %s (error %d).", m_symbol, timeframes[i].name, GetLastError());
+            ok = false;
+         }
+
+         ResetLastError();
          m_atrHandles[i] = iATR(m_symbol, timeframes[i].tf, 14);
+         if(m_atrHandles[i] == INVALID_HANDLE)
+         {
+            PrintFormat("MarketBrain: Failed to create ATR handle for %s %s (error %d).", m_symbol, timeframes[i].name, GetLastError());
+            ok = false;
+         }
       }
+      return ok;
    }
+
+   bool IsReady() const { return m_handlesReady; }
 
    void Update(double tickVolume, double bid, double ask)
    {
@@ -127,6 +156,19 @@ public:
       for(int i = 0; i < 8; i++)
       {
          datetime barTime = iSeriesTime(m_symbol, timeframes[i].tf, 0);
+         if(barTime == 0)
+         {
+            if(!m_barTimeWarned[i])
+            {
+               PrintFormat("MarketBrain: No bar time available for %s %s (error %d); keeping the previous countdown.",
+                           m_symbol, timeframes[i].name, GetLastError());
+               m_barTimeWarned[i] = true;
+            }
+            UpdateTechnicalIndicators(i);
+            continue;
+         }
+         m_barTimeWarned[i] = false;
+
          if(barTime != timeframes[i].lastBarTime)
          {
             timeframes[i].lastBarTime = barTime;
@@ -180,9 +222,17 @@ public:
       if(handleRSI != INVALID_HANDLE)
       {
          double rsiBuf[1];
+         ResetLastError();
          if(CopyBuffer(handleRSI, 0, 0, 1, rsiBuf) > 0)
          {
             timeframes[index].rsiVal = rsiBuf[0];
+            m_rsiWarned[index] = false;
+         }
+         else if(!m_rsiWarned[index])
+         {
+            PrintFormat("MarketBrain: RSI buffer unavailable for %s %s (error %d); reusing the last value %.2f.",
+                        m_symbol, timeframes[index].name, GetLastError(), timeframes[index].rsiVal);
+            m_rsiWarned[index] = true;
          }
       }
 
@@ -190,9 +240,17 @@ public:
       if(handleATR != INVALID_HANDLE)
       {
          double atrBuf[1];
+         ResetLastError();
          if(CopyBuffer(handleATR, 0, 0, 1, atrBuf) > 0)
          {
             timeframes[index].atrVal = atrBuf[0];
+            m_atrWarned[index] = false;
+         }
+         else if(!m_atrWarned[index])
+         {
+            PrintFormat("MarketBrain: ATR buffer unavailable for %s %s (error %d); reusing the last value %.5f.",
+                        m_symbol, timeframes[index].name, GetLastError(), timeframes[index].atrVal);
+            m_atrWarned[index] = true;
          }
       }
 
@@ -209,8 +267,19 @@ public:
    {
       MqlRates rates[];
       ArraySetAsSeries(rates, true);
+      ResetLastError();
       int copied = CopyRates(m_symbol, PERIOD_H1, 0, 10, rates);
-      if(copied < 10) return;
+      if(copied < 10)
+      {
+         if(!m_smcWarned)
+         {
+            PrintFormat("MarketBrain: Only %d of 10 H1 bars available for %s (error %d); smart money structure not refreshed.",
+                        copied, m_symbol, GetLastError());
+            m_smcWarned = true;
+         }
+         return;
+      }
+      m_smcWarned = false;
 
       ArrayResize(m_fvgList, 0);
       ArrayResize(m_obList, 0);
@@ -292,9 +361,11 @@ public:
       return "SYDNEY";
    }
 
+   // Returns 0 when the series is not available yet; callers must treat 0 as "no data".
    datetime iSeriesTime(string symbol, ENUM_TIMEFRAMES tf, int index)
    {
       datetime t[1];
+      ResetLastError();
       if(CopyTime(symbol, tf, index, 1, t) > 0)
          return t[0];
       return 0;
