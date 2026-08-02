@@ -127,10 +127,14 @@ public:
       for(int i = 0; i < 8; i++)
       {
          datetime barTime = iSeriesTime(m_symbol, timeframes[i].tf, 0);
-         if(barTime != timeframes[i].lastBarTime)
+         if(barTime <= 0)
          {
-            timeframes[i].lastBarTime = barTime;
+            // History not available yet: keep the previous countdown rather than zeroing it
+            UpdateTechnicalIndicators(i);
+            continue;
          }
+
+         timeframes[i].lastBarTime = barTime;
 
          datetime curTime = TimeCurrent();
          int elapsed = (int)(curTime - barTime);
@@ -148,6 +152,8 @@ public:
             MqlDateTime dt;
             TimeToStruct(curTime, dt);
             elapsed = (dt.day - 1) * 86400 + dt.hour * 3600 + dt.min * 60 + dt.sec;
+            // Months are not all 30 days long
+            totalSecs = DaysInMonth(dt.year, dt.mon) * 86400;
          }
 
          int remaining = totalSecs - elapsed;
@@ -290,6 +296,16 @@ public:
       if(hour >= 13 && hour < 21) return "NEW YORK";
       if(hour >= 0 && hour < 8) return "TOKYO";
       return "SYDNEY";
+   }
+
+   int DaysInMonth(int year, int month)
+   {
+      int days[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+      if(month < 1 || month > 12) return 30;
+
+      bool isLeap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+      if(month == 2 && isLeap) return 29;
+      return days[month - 1];
    }
 
    datetime iSeriesTime(string symbol, ENUM_TIMEFRAMES tf, int index)

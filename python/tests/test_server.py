@@ -1,16 +1,28 @@
+import csv
 import json
 import os
 
 import pytest
 
-CSV_HEADER = "timestamp,symbol,timeframe,direction,confidence,session,atr,rsi\n"
+CSV_COLUMNS = [
+    "timestamp",
+    "symbol",
+    "timeframe",
+    "direction",
+    "confidence",
+    "session",
+    "atr",
+    "rsi",
+]
+# The empty-state phrase also appears in the auto-refresh script, so tests match the row.
+EMPTY_STATE_ROW = "<tr><td colspan='7'"
 
 
 class TestBootstrap:
     def test_log_dir_and_csv_header_created_on_import(self, server):
         assert os.path.isdir(server.LOG_DIR)
-        with open(server.CSV_PATH) as f:
-            assert f.readline() == CSV_HEADER
+        with open(server.CSV_PATH, newline="") as f:
+            assert next(csv.reader(f)) == CSV_COLUMNS
 
     def test_existing_csv_is_not_overwritten(self, server):
         with open(server.CSV_PATH, "a") as f:
@@ -52,13 +64,12 @@ class TestLogSignal:
     def test_appends_row_to_csv(self, client, server, signal_payload):
         client.post("/api/signal", json=signal_payload)
 
-        with open(server.CSV_PATH) as f:
-            lines = f.readlines()
+        with open(server.CSV_PATH, newline="") as f:
+            rows = list(csv.reader(f))
 
-        assert lines[0] == CSV_HEADER
-        assert len(lines) == 2
-        fields = lines[1].strip().split(",")
-        assert fields[1:] == [
+        assert rows[0] == CSV_COLUMNS
+        assert len(rows) == 2
+        assert rows[1][1:] == [
             "EURUSD",
             "H1",
             "BUY",
@@ -112,6 +123,130 @@ class TestLogSignal:
 
         assert response.status_code == 200
         assert response.json()["data"]["confidence"] == 42.5
+
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("confidence", 120.0),
+            ("confidence", -1.0),
+            ("rsi", 101.0),
+            ("atr", -0.5),
+            ("symbol", ""),
+        ],
+    )
+    def test_rejects_out_of_range_values(self, client, signal_payload, field, value):
+        payload = {**signal_payload, field: value}
+
+        assert client.post("/api/signal", json=payload).status_code == 422
+
+    def test_separators_in_fields_stay_on_one_csv_row(
+        self, client, server, signal_payload
+    ):
+        client.post("/api/signal", json={**signal_payload, "session": "NY,LONDON"})
+
+        with open(server.CSV_PATH, newline="") as f:
+            rows = list(csv.reader(f))
+
+        assert len(rows) == 2
+        assert rows[1][5] == "NY,LONDON"
+
+    def test_json_log_holding_an_object_is_reset(
+        self, client, server, signal_payload
+    ):
+        with open(server.JSON_PATH, "w") as f:
+            json.dump({"unexpected": "shape"}, f)
+
+        response = client.post("/api/signal", json=signal_payload)
+
+        assert response.status_code == 200
+        with open(server.JSON_PATH) as f:
+            assert [entry["symbol"] for entry in json.load(f)] == ["EURUSD"]
+
+
+class TestListSignals:
+    def test_returns_newest_first_with_totals(self, client, signal_payload):
+        for i in range(3):
+            client.post("/api/signal", json={**signal_payload, "symbol": f"SYM{i}"})
+
+        body = client.get("/api/signals").json()
+
+        assert body["total"] == 3
+        assert body["count"] == 3
+        assert [s["symbol"] for s in body["signals"]] == ["SYM2", "SYM1", "SYM0"]
+
+    def test_limit_caps_returned_signals_but_not_total(self, client, signal_payload):
+        for i in range(4):
+            client.post("/api/signal", json={**signal_payload, "symbol": f"SYM{i}"})
+
+        body = client.get("/api/signals", params={"limit": 2}).json()
+
+        assert body["total"] == 4
+        assert [s["symbol"] for s in body["signals"]] == ["SYM3", "SYM2"]
+
+    def test_filters_by_symbol_and_direction_case_insensitively(
+        self, client, signal_payload
+    ):
+        client.post("/api/signal", json=signal_payload)
+        client.post("/api/signal", json={**signal_payload, "direction": "SELL"})
+        client.post("/api/signal", json={**signal_payload, "symbol": "XAUUSD"})
+
+        body = client.get(
+            "/api/signals", params={"symbol": "eurusd", "direction": "sell"}
+        ).json()
+
+        assert body["total"] == 1
+        assert body["signals"][0]["direction"] == "SELL"
+
+    def test_empty_log_returns_empty_list(self, client):
+        assert client.get("/api/signals").json() == {
+            "count": 0,
+            "total": 0,
+            "signals": [],
+        }
+
+    @pytest.mark.parametrize("limit", [0, -1, 501])
+    def test_rejects_out_of_range_limit(self, client, limit):
+        assert client.get("/api/signals", params={"limit": limit}).status_code == 422
+
+
+class TestStats:
+    def test_empty_log_reports_zeroes(self, client):
+        assert client.get("/api/stats").json() == {
+            "total_signals": 0,
+            "by_direction": {},
+            "by_symbol": {},
+            "average_confidence": 0.0,
+            "latest_timestamp": None,
+        }
+
+    def test_aggregates_direction_symbol_and_confidence(self, client, signal_payload):
+        client.post("/api/signal", json={**signal_payload, "confidence": 80.0})
+        client.post(
+            "/api/signal",
+            json={**signal_payload, "direction": "SELL", "confidence": 60.0},
+        )
+        client.post(
+            "/api/signal",
+            json={**signal_payload, "symbol": "XAUUSD", "confidence": 40.0},
+        )
+
+        body = client.get("/api/stats").json()
+
+        assert body["total_signals"] == 3
+        assert body["by_direction"] == {"BUY": 2, "SELL": 1}
+        assert body["by_symbol"] == {"EURUSD": 2, "XAUUSD": 1}
+        assert body["average_confidence"] == 60.0
+        assert body["latest_timestamp"]
+
+    def test_tolerates_entries_with_missing_fields(self, client, server):
+        with open(server.JSON_PATH, "w") as f:
+            json.dump([{"symbol": "EURUSD"}, "not-a-dict"], f)
+
+        body = client.get("/api/stats").json()
+
+        assert body["total_signals"] == 1
+        assert body["by_direction"] == {"UNKNOWN": 1}
+        assert body["average_confidence"] == 0.0
 
 
 class TestCorrelation:
@@ -177,6 +312,53 @@ class TestMonteCarlo:
     def test_rejects_non_numeric_simulations(self, client):
         assert client.get("/api/monte_carlo?simulations=many").status_code == 422
 
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {"simulations": 0},
+            {"simulations": 100001},
+            {"initial_capital": 0},
+            {"win_rate": 1.5},
+            {"win_rate": -0.1},
+            {"trades": 0},
+        ],
+    )
+    def test_rejects_invalid_parameters_instead_of_crashing(self, client, params):
+        assert client.get("/api/monte_carlo", params=params).status_code == 422
+
+    def test_trades_per_path_is_configurable(self, client):
+        body = client.get(
+            "/api/monte_carlo",
+            params={
+                "simulations": 3,
+                "initial_capital": 1000,
+                "win_rate": 1.0,
+                "trades": 10,
+            },
+        ).json()
+
+        assert body["trades_per_path"] == 10
+        assert body["average_ending_capital"] == pytest.approx(
+            round(1000 * (1.02**10), 2), rel=1e-9
+        )
+
+    def test_probability_of_profit_reflects_win_rate_extremes(self, client):
+        winning = client.get(
+            "/api/monte_carlo", params={"simulations": 5, "win_rate": 1.0}
+        ).json()
+        losing = client.get(
+            "/api/monte_carlo", params={"simulations": 5, "win_rate": 0.0}
+        ).json()
+
+        assert winning["probability_of_profit"] == 1.0
+        assert losing["probability_of_profit"] == 0.0
+
+    def test_median_sits_between_min_and_max(self, client):
+        body = client.get("/api/monte_carlo", params={"simulations": 50}).json()
+
+        assert body["min_ending_capital"] <= body["median_ending_capital"]
+        assert body["median_ending_capital"] <= body["max_ending_capital"]
+
 
 class TestDashboard:
     def test_renders_empty_state_without_signals(self, client):
@@ -184,14 +366,14 @@ class TestDashboard:
 
         assert response.status_code == 200
         assert "text/html" in response.headers["content-type"]
-        assert "No active signal logs yet" in response.text
+        assert EMPTY_STATE_ROW in response.text
 
     def test_renders_logged_signal_row(self, client, signal_payload):
         client.post("/api/signal", json=signal_payload)
 
         html = client.get("/dashboard").text
 
-        assert "No active signal logs yet" not in html
+        assert EMPTY_STATE_ROW not in html
         assert "EURUSD" in html
         assert "text-emerald-500" in html
 
@@ -212,6 +394,25 @@ class TestDashboard:
         assert "SYM00" not in html
         assert "SYM01" not in html
 
+    def test_escapes_html_in_logged_values(self, client, signal_payload):
+        client.post(
+            "/api/signal", json={**signal_payload, "symbol": "<script>x()</script>"}
+        )
+
+        html = client.get("/dashboard").text
+
+        assert "<script>x()</script>" not in html
+        assert "&lt;script&gt;x()&lt;/script&gt;" in html
+
+    def test_renders_entries_missing_fields(self, client, server):
+        with open(server.JSON_PATH, "w") as f:
+            json.dump([{"symbol": "EURUSD"}], f)
+
+        response = client.get("/dashboard")
+
+        assert response.status_code == 200
+        assert EMPTY_STATE_ROW not in response.text
+
     def test_corrupt_json_log_renders_empty_state(self, client, server):
         with open(server.JSON_PATH, "w") as f:
             f.write("[[[")
@@ -219,7 +420,7 @@ class TestDashboard:
         response = client.get("/dashboard")
 
         assert response.status_code == 200
-        assert "No active signal logs yet" in response.text
+        assert EMPTY_STATE_ROW in response.text
 
 
 class TestModels:

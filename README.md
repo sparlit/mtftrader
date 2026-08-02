@@ -70,6 +70,18 @@ Once started, the interactive premium **ITIP Web Dashboard** is accessible local
   cargo run --manifest-path rust/Cargo.toml
   ```
 
+## HTTP API
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET    | `/` | Service status |
+| POST   | `/api/signal` | Log a signal from the MT5 EA |
+| GET    | `/api/signals?limit=&symbol=&direction=` | Latest signals, newest first |
+| GET    | `/api/stats` | Signal counts per direction/symbol and average confidence |
+| GET    | `/api/correlation` | Simulated cross-asset correlation matrix |
+| GET    | `/api/monte_carlo?simulations=&initial_capital=&win_rate=&trades=` | Risk projection |
+| GET    | `/dashboard` | Web dashboard (signal table auto-refreshes every 10s) |
+
 ## Running Tests
 
 ### Python (FastAPI backend)

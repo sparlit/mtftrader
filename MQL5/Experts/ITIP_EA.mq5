@@ -32,9 +32,11 @@ CExecutionBrain       *g_execution;
 CDashboardBrain       *g_dashboard;
 CInfrastructureBrain  *g_infrastructure;
 
+#define NO_DIVERGENCE "No Divergence Detected"
+
 double           g_aiConfidence = 0.0;
 string           g_lastSignalStr = "NEUTRAL";
-string           g_divDetails = "No Divergence Detected";
+string           g_divDetails = NO_DIVERGENCE;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -44,6 +46,7 @@ int OnInit()
    g_market = new CMarketBrain();
    g_strategy = new CStrategyBrain();
    g_risk = new CRiskBrain();
+   g_risk.SetRiskParameters(RiskPercent, DrawdownLimit);
    g_execution = new CExecutionBrain();
    g_dashboard = new CDashboardBrain();
    g_infrastructure = new CInfrastructureBrain(ZmqHost, ZmqPort);
@@ -87,9 +90,15 @@ void OnTick()
    g_market.Update(lastVolume, bid, ask);
 
    // Active Divergence Scanner
-   if(g_strategy.DetectDivergence(*g_market, g_divDetails))
+   string divergence = "";
+   if(g_strategy.DetectDivergence(*g_market, divergence))
    {
+      g_divDetails = divergence;
       Print("ITIP Market Scanner: ", g_divDetails);
+   }
+   else
+   {
+      g_divDetails = NO_DIVERGENCE;
    }
 
    ENUM_SIGNAL signal = g_strategy.Evaluate(*g_market, g_aiConfidence);
@@ -151,7 +160,7 @@ void OnTimer()
    g_market.Update(lastVolume, bid, ask);
 
    string finalStatus = g_lastSignalStr;
-   if(g_divDetails != "No Divergence Detected")
+   if(g_divDetails != NO_DIVERGENCE)
    {
       finalStatus = StringFormat("%s | %s", g_lastSignalStr, g_divDetails);
    }

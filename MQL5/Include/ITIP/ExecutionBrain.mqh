@@ -61,10 +61,16 @@ public:
          {
             if(pos.Symbol() == m_symbol && pos.Magic() == m_magic)
             {
-               double closeVol = pos.Volume() * (percent / 100.0);
+               double volume = pos.Volume();
+               double closeVol = volume * (percent / 100.0);
                double step = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_STEP);
-               closeVol = MathRound(closeVol / step) * step;
-               if(closeVol >= SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_MIN))
+               double minLot = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_MIN);
+
+               // Round down so the closed part never exceeds the requested share
+               if(step > 0.0) closeVol = MathFloor(closeVol / step) * step;
+
+               // A remainder below the minimum lot would be rejected by the broker
+               if(closeVol >= minLot && (volume - closeVol) >= minLot)
                {
                   m_trade.PositionClosePartial(pos.Ticket(), closeVol);
                }

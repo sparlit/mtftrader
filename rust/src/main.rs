@@ -7,9 +7,22 @@ pub struct RiskReport {
     pub final_capital_mean: f64,
     pub value_at_risk_95: f64,
     pub expected_shortfall_95: f64,
+    pub probability_of_profit: f64,
 }
 
 pub fn simulate_monte_carlo(initial_capital: f64, win_rate: f64, num_trades: usize, num_simulations: usize) -> RiskReport {
+    // gen_bool panics outside [0, 1], and an empty run has no percentile to index.
+    let win_rate = win_rate.clamp(0.0, 1.0);
+    if num_simulations == 0 {
+        return RiskReport {
+            initial_capital,
+            final_capital_mean: initial_capital,
+            value_at_risk_95: 0.0,
+            expected_shortfall_95: 0.0,
+            probability_of_profit: 0.0,
+        };
+    }
+
     let mut rng = rand::thread_rng();
     let mut final_capitals = Vec::with_capacity(num_simulations);
 
@@ -31,23 +44,25 @@ pub fn simulate_monte_carlo(initial_capital: f64, win_rate: f64, num_trades: usi
     let mean = sum / num_simulations as f64;
 
     // Value at Risk at 95% confidence
-    let index_95 = (num_simulations as f64 * 0.05) as usize;
+    let index_95 = ((num_simulations as f64 * 0.05) as usize).min(num_simulations - 1);
     let var_value = initial_capital - final_capitals[index_95];
 
-    // Expected Shortfall at 95% confidence
-    let worst_5_percent = &final_capitals[0..index_95];
+    // Expected Shortfall at 95% confidence; the tail always holds the worst path at minimum
+    let worst_5_percent = &final_capitals[0..index_95.max(1)];
     let sum_worst: f64 = worst_5_percent.iter().sum();
-    let expected_shortfall_95 = if !worst_5_percent.is_empty() {
-        initial_capital - (sum_worst / worst_5_percent.len() as f64)
-    } else {
-        0.0
-    };
+    let expected_shortfall_95 = initial_capital - (sum_worst / worst_5_percent.len() as f64);
+
+    let profitable = final_capitals
+        .iter()
+        .filter(|capital| **capital > initial_capital)
+        .count();
 
     RiskReport {
         initial_capital,
         final_capital_mean: mean,
         value_at_risk_95: var_value,
         expected_shortfall_95,
+        probability_of_profit: profitable as f64 / num_simulations as f64,
     }
 }
 
@@ -91,11 +106,49 @@ mod tests {
     }
 
     #[test]
-    fn expected_shortfall_is_zero_when_tail_sample_is_empty() {
+    fn small_sample_tail_falls_back_to_the_worst_path() {
         // With fewer than 20 simulations the 5% tail index rounds down to 0.
         let report = simulate_monte_carlo(1000.0, 0.5, 20, 10);
 
+        assert!((report.expected_shortfall_95 - report.value_at_risk_95).abs() < EPSILON);
+    }
+
+    #[test]
+    fn single_simulation_does_not_panic() {
+        let report = simulate_monte_carlo(1000.0, 0.5, 10, 1);
+
+        assert!(report.final_capital_mean > 0.0);
+    }
+
+    #[test]
+    fn zero_simulations_returns_a_neutral_report() {
+        let report = simulate_monte_carlo(1000.0, 0.55, 10, 0);
+
+        assert!((report.final_capital_mean - 1000.0).abs() < EPSILON);
+        assert_eq!(report.value_at_risk_95, 0.0);
         assert_eq!(report.expected_shortfall_95, 0.0);
+        assert_eq!(report.probability_of_profit, 0.0);
+    }
+
+    #[test]
+    fn out_of_range_win_rate_is_clamped_instead_of_panicking() {
+        let above = simulate_monte_carlo(1000.0, 4.2, 10, 20);
+        let below = simulate_monte_carlo(1000.0, -3.0, 10, 20);
+
+        assert!((above.final_capital_mean - 1000.0 * 1.02_f64.powi(10)).abs() < EPSILON);
+        assert!((below.final_capital_mean - 1000.0 * 0.99_f64.powi(10)).abs() < EPSILON);
+    }
+
+    #[test]
+    fn probability_of_profit_tracks_win_rate_extremes() {
+        assert_eq!(
+            simulate_monte_carlo(1000.0, 1.0, 10, 50).probability_of_profit,
+            1.0
+        );
+        assert_eq!(
+            simulate_monte_carlo(1000.0, 0.0, 10, 50).probability_of_profit,
+            0.0
+        );
     }
 
     #[test]
@@ -133,5 +186,6 @@ mod tests {
         assert!((parsed.final_capital_mean - report.final_capital_mean).abs() < EPSILON);
         assert!((parsed.value_at_risk_95 - report.value_at_risk_95).abs() < EPSILON);
         assert!((parsed.expected_shortfall_95 - report.expected_shortfall_95).abs() < EPSILON);
+        assert!((parsed.probability_of_profit - report.probability_of_profit).abs() < EPSILON);
     }
 }
