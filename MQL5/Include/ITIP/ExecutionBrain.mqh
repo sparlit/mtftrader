@@ -9,6 +9,7 @@
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
+#include "Common.mqh"
 
 class CExecutionBrain
 {
@@ -16,6 +17,11 @@ private:
    CTrade m_trade;
    string m_symbol;
    ulong m_magic;
+
+   bool SelectOwn(CPositionInfo &pos, int index)
+   {
+      return SelectOwnedPosition(pos, index, m_symbol, m_magic);
+   }
 
 public:
    CExecutionBrain()
@@ -42,13 +48,9 @@ public:
       CPositionInfo pos;
       for(int i = PositionsTotal() - 1; i >= 0; i--)
       {
-         if(pos.SelectByIndex(i))
-         {
-            if(pos.Symbol() == m_symbol && pos.Magic() == m_magic)
-            {
-               m_trade.PositionClose(pos.Ticket());
-            }
-         }
+         if(!SelectOwn(pos, i)) continue;
+
+         m_trade.PositionClose(pos.Ticket());
       }
    }
 
@@ -57,18 +59,14 @@ public:
       CPositionInfo pos;
       for(int i = PositionsTotal() - 1; i >= 0; i--)
       {
-         if(pos.SelectByIndex(i))
+         if(!SelectOwn(pos, i)) continue;
+
+         double closeVol = pos.Volume() * (percent / 100.0);
+         double step = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_STEP);
+         closeVol = MathRound(closeVol / step) * step;
+         if(closeVol >= SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_MIN))
          {
-            if(pos.Symbol() == m_symbol && pos.Magic() == m_magic)
-            {
-               double closeVol = pos.Volume() * (percent / 100.0);
-               double step = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_STEP);
-               closeVol = MathRound(closeVol / step) * step;
-               if(closeVol >= SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_MIN))
-               {
-                  m_trade.PositionClosePartial(pos.Ticket(), closeVol);
-               }
-            }
+            m_trade.PositionClosePartial(pos.Ticket(), closeVol);
          }
       }
    }
@@ -78,30 +76,26 @@ public:
       CPositionInfo pos;
       for(int i = PositionsTotal() - 1; i >= 0; i--)
       {
-         if(pos.SelectByIndex(i))
-         {
-            if(pos.Symbol() == m_symbol && pos.Magic() == m_magic)
-            {
-               double price = pos.PriceCurrent();
-               double open = pos.PriceOpen();
-               double sl = pos.StopLoss();
-               double point = SymbolInfoDouble(m_symbol, SYMBOL_POINT);
+         if(!SelectOwn(pos, i)) continue;
 
-               // Breakeven logic: if profit is more than 30 points, move SL to open
-               if(pos.PositionType() == POSITION_TYPE_BUY)
-               {
-                  if(price - open > 30 * point && sl < open)
-                  {
-                     m_trade.PositionModify(pos.Ticket(), open + 2 * point, pos.TakeProfit());
-                  }
-               }
-               else if(pos.PositionType() == POSITION_TYPE_SELL)
-               {
-                  if(open - price > 30 * point && (sl > open || sl == 0))
-                  {
-                     m_trade.PositionModify(pos.Ticket(), open - 2 * point, pos.TakeProfit());
-                  }
-               }
+         double price = pos.PriceCurrent();
+         double open = pos.PriceOpen();
+         double sl = pos.StopLoss();
+         double point = SymbolInfoDouble(m_symbol, SYMBOL_POINT);
+
+         // Breakeven logic: if profit is more than 30 points, move SL to open
+         if(pos.PositionType() == POSITION_TYPE_BUY)
+         {
+            if(price - open > 30 * point && sl < open)
+            {
+               m_trade.PositionModify(pos.Ticket(), open + 2 * point, pos.TakeProfit());
+            }
+         }
+         else if(pos.PositionType() == POSITION_TYPE_SELL)
+         {
+            if(open - price > 30 * point && (sl > open || sl == 0))
+            {
+               m_trade.PositionModify(pos.Ticket(), open - 2 * point, pos.TakeProfit());
             }
          }
       }

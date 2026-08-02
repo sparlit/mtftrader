@@ -1,23 +1,14 @@
 import time
-import json
-import os
 import random
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+from signal_store import append_signal, init_store, read_signals
+
 app = FastAPI(title="ITIP AI & Analytics Backend v1.0")
 
-# CSV & JSON Logging Path
-LOG_DIR = "./logs"
-os.makedirs(LOG_DIR, exist_ok=True)
-CSV_PATH = os.path.join(LOG_DIR, "signals_log.csv")
-JSON_PATH = os.path.join(LOG_DIR, "signals_log.json")
-
-# Create CSV header if it doesn't exist
-if not os.path.exists(CSV_PATH):
-    with open(CSV_PATH, "w") as f:
-        f.write("timestamp,symbol,timeframe,direction,confidence,session,atr,rsi\n")
+init_store()
 
 class SignalRequest(BaseModel):
     symbol: str
@@ -45,37 +36,10 @@ def read_root():
 
 @app.post("/api/signal")
 def log_signal(req: SignalRequest):
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    signal = dict(req.model_dump(), timestamp=time.strftime("%Y-%m-%d %H:%M:%S"))
+    stored = append_signal(signal)
 
-    # Save to CSV
-    with open(CSV_PATH, "a") as f:
-        f.write(f"{timestamp},{req.symbol},{req.timeframe},{req.direction},{req.confidence},{req.session},{req.atr},{req.rsi}\n")
-
-    # Save to JSON
-    signal_data = {
-        "timestamp": timestamp,
-        "symbol": req.symbol,
-        "timeframe": req.timeframe,
-        "direction": req.direction,
-        "confidence": req.confidence,
-        "session": req.session,
-        "atr": req.atr,
-        "rsi": req.rsi
-    }
-
-    existing_data = []
-    if os.path.exists(JSON_PATH):
-        try:
-            with open(JSON_PATH, "r") as f:
-                existing_data = json.load(f)
-        except Exception:
-            pass
-
-    existing_data.append(signal_data)
-    with open(JSON_PATH, "w") as f:
-        json.dump(existing_data, f, indent=4)
-
-    return {"status": "SUCCESS", "message": "Signal logged", "data": signal_data}
+    return {"status": "SUCCESS", "message": "Signal logged", "data": stored}
 
 @app.get("/api/correlation")
 def get_portfolio_correlation():
@@ -115,18 +79,18 @@ def run_monte_carlo(simulations: int = 1000, initial_capital: float = 10000.0, w
         "min_ending_capital": round(min_ending, 2)
     }
 
+def stat_card(label: str, value: str, value_class: str = "text-slate-100") -> str:
+    return f"""
+                <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col space-y-2">
+                    <span class="text-xs text-slate-400 uppercase tracking-wider font-semibold">{label}</span>
+                    <span class="text-2xl font-bold {value_class}">{value}</span>
+                </div>"""
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 def get_web_dashboard():
-    # Read raw signals for visualization
-    signals = []
-    if os.path.exists(JSON_PATH):
-        try:
-            with open(JSON_PATH, "r") as f:
-                signals = json.load(f)
-        except Exception:
-            pass
-
-    # Reverse signals to show newest first
+    # Read raw signals for visualization, newest first
+    signals = read_signals()
     signals.reverse()
     signals_html = ""
     for s in signals[:10]: # show latest 10 signals
@@ -142,6 +106,13 @@ def get_web_dashboard():
             <td class="p-3 text-slate-400">{s["atr"]}</td>
         </tr>
         """
+    stats_html = "".join([
+        stat_card("AI System Status", "ONLINE", "text-emerald-400"),
+        stat_card("Active Engine Threads", "8 (DPI-Aware)"),
+        stat_card("Active Timeframes", "8 TFs (M5-MN)", "text-cyan-400"),
+        stat_card("Inference Model", "ONNX Optimized"),
+    ])
+
     if not signals_html:
         signals_html = "<tr><td colspan='7' class='p-4 text-center text-slate-500'>No active signal logs yet. Run the MT5 EA to populate signals.</td></tr>"
 
@@ -178,23 +149,7 @@ def get_web_dashboard():
 
         <main class="max-w-7xl mx-auto px-6 py-8 space-y-8">
             <!-- Stats Row -->
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
-                <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col space-y-2">
-                    <span class="text-xs text-slate-400 uppercase tracking-wider font-semibold">AI System Status</span>
-                    <span class="text-2xl font-bold text-emerald-400">ONLINE</span>
-                </div>
-                <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col space-y-2">
-                    <span class="text-xs text-slate-400 uppercase tracking-wider font-semibold">Active Engine Threads</span>
-                    <span class="text-2xl font-bold text-slate-100">8 (DPI-Aware)</span>
-                </div>
-                <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col space-y-2">
-                    <span class="text-xs text-slate-400 uppercase tracking-wider font-semibold">Active Timeframes</span>
-                    <span class="text-2xl font-bold text-cyan-400">8 TFs (M5-MN)</span>
-                </div>
-                <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col space-y-2">
-                    <span class="text-xs text-slate-400 uppercase tracking-wider font-semibold">Inference Model</span>
-                    <span class="text-2xl font-bold text-slate-100">ONNX Optimized</span>
-                </div>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-6">{stats_html}
             </div>
 
             <!-- Signal Table -->
@@ -265,24 +220,18 @@ def get_web_dashboard():
                 const response = await fetch(`/api/monte_carlo?initial_capital=${{capital}}&win_rate=${{win_rate}}`);
                 const data = await response.json();
 
+                const metricCard = (label, value, valueClass) => `
+                        <div class="p-4 bg-slate-950 rounded-xl border border-slate-800">
+                            <span class="block text-xs text-slate-400 mb-1">${{label}}</span>
+                            <span class="text-xl font-bold ${{valueClass}}">${{value}}</span>
+                        </div>`;
+
                 document.getElementById('resultsContent').innerHTML = `
                     <div class="grid grid-cols-2 gap-4">
-                        <div class="p-4 bg-slate-950 rounded-xl border border-slate-800">
-                            <span class="block text-xs text-slate-400 mb-1">Average Projection</span>
-                            <span class="text-xl font-bold text-cyan-400">$${{data.average_ending_capital}}</span>
-                        </div>
-                        <div class="p-4 bg-slate-950 rounded-xl border border-slate-800">
-                            <span class="block text-xs text-slate-400 mb-1">Maximum Best Path</span>
-                            <span class="text-xl font-bold text-emerald-400">$${{data.max_ending_capital}}</span>
-                        </div>
-                        <div class="p-4 bg-slate-950 rounded-xl border border-slate-800">
-                            <span class="block text-xs text-slate-400 mb-1">Minimum Worst Path</span>
-                            <span class="text-xl font-bold text-rose-400">$${{data.min_ending_capital}}</span>
-                        </div>
-                        <div class="p-4 bg-slate-950 rounded-xl border border-slate-800">
-                            <span class="block text-xs text-slate-400 mb-1">Runs Simulated</span>
-                            <span class="text-xl font-bold text-slate-300">${{data.simulations}}</span>
-                        </div>
+                        ${{metricCard('Average Projection', '$' + data.average_ending_capital, 'text-cyan-400')}}
+                        ${{metricCard('Maximum Best Path', '$' + data.max_ending_capital, 'text-emerald-400')}}
+                        ${{metricCard('Minimum Worst Path', '$' + data.min_ending_capital, 'text-rose-400')}}
+                        ${{metricCard('Runs Simulated', data.simulations, 'text-slate-300')}}
                     </div>
                 `;
             }});

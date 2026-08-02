@@ -80,11 +80,8 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   double lastVolume = (double)SymbolInfoInteger(_Symbol, SYMBOL_VOLUME);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-
-   g_market.Update(lastVolume, bid, ask);
+   double bid, ask;
+   RefreshMarket(bid, ask);
 
    // Active Divergence Scanner
    if(g_strategy.DetectDivergence(*g_market, g_divDetails))
@@ -97,40 +94,12 @@ void OnTick()
    if(signal == SIGNAL_BUY)
    {
       g_lastSignalStr = "BULLISH SIGNAL";
-      if(g_risk.AllowTrade())
-      {
-         double atr = g_market.GetATR(PERIOD_H1);
-         double size = g_risk.CalculatePositionSize(200, atr);
-         if(size > 0)
-         {
-            double sl = bid - (atr * 2.0);
-            double tp = ask + (atr * 4.0);
-            if(g_execution.ExecuteBuy(size, sl, tp))
-            {
-               TriggerAlerts("ITIP Buy Alert: Target Entry triggered!");
-               g_infrastructure.SendSignal(_Symbol, "H1", "BUY", g_aiConfidence, g_market.GetCurrentSession(), atr, g_market.timeframes[3].rsiVal);
-            }
-         }
-      }
+      TryEnter(true, bid, ask);
    }
    else if(signal == SIGNAL_SELL)
    {
       g_lastSignalStr = "BEARISH SIGNAL";
-      if(g_risk.AllowTrade())
-      {
-         double atr = g_market.GetATR(PERIOD_H1);
-         double size = g_risk.CalculatePositionSize(200, atr);
-         if(size > 0)
-         {
-            double sl = ask + (atr * 2.0);
-            double tp = bid - (atr * 4.0);
-            if(g_execution.ExecuteSell(size, sl, tp))
-            {
-               TriggerAlerts("ITIP Sell Alert: Target Entry triggered!");
-               g_infrastructure.SendSignal(_Symbol, "H1", "SELL", g_aiConfidence, g_market.GetCurrentSession(), atr, g_market.timeframes[3].rsiVal);
-            }
-         }
-      }
+      TryEnter(false, bid, ask);
    }
    else
    {
@@ -139,16 +108,61 @@ void OnTick()
 }
 
 //+------------------------------------------------------------------+
+//| Pushes the latest quote into the market brain                    |
+//+------------------------------------------------------------------+
+void RefreshMarket(double &bid, double &ask)
+{
+   double lastVolume = (double)SymbolInfoInteger(_Symbol, SYMBOL_VOLUME);
+   bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+   g_market.Update(lastVolume, bid, ask);
+}
+
+//+------------------------------------------------------------------+
+//| Risk-checked ATR based entry in the given direction              |
+//+------------------------------------------------------------------+
+void TryEnter(bool isBuy, double bid, double ask)
+{
+   if(!g_risk.AllowTrade()) return;
+
+   double atr = g_market.GetATR(PERIOD_H1);
+   double size = g_risk.CalculatePositionSize(200, atr);
+   if(size <= 0) return;
+
+   double sl = isBuy ? bid - (atr * 2.0) : ask + (atr * 2.0);
+   double tp = isBuy ? ask + (atr * 4.0) : bid - (atr * 4.0);
+
+   bool executed = isBuy ? g_execution.ExecuteBuy(size, sl, tp)
+                         : g_execution.ExecuteSell(size, sl, tp);
+   if(!executed) return;
+
+   string direction = isBuy ? "BUY" : "SELL";
+   TriggerAlerts(StringFormat("ITIP %s Alert: Target Entry triggered!", isBuy ? "Buy" : "Sell"));
+   g_infrastructure.SendSignal(_Symbol, "H1", direction, g_aiConfidence, g_market.GetCurrentSession(), atr, g_market.timeframes[3].rsiVal);
+}
+
+//+------------------------------------------------------------------+
+//| Manual (dashboard button) market order without SL/TP             |
+//+------------------------------------------------------------------+
+void ManualEntry(bool isBuy)
+{
+   double atr = g_market.GetATR(PERIOD_H1);
+   double size = g_risk.CalculatePositionSize(150, atr);
+   if(size <= 0) return;
+
+   if(isBuy) g_execution.ExecuteBuy(size, 0, 0);
+   else      g_execution.ExecuteSell(size, 0, 0);
+}
+
+//+------------------------------------------------------------------+
 //| Timer function                                                   |
 //+------------------------------------------------------------------+
 void OnTimer()
 {
    // Redraw timers and elements every second for fluid real-time responsiveness
-   double lastVolume = (double)SymbolInfoInteger(_Symbol, SYMBOL_VOLUME);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-
-   g_market.Update(lastVolume, bid, ask);
+   double bid, ask;
+   RefreshMarket(bid, ask);
 
    string finalStatus = g_lastSignalStr;
    if(g_divDetails != "No Divergence Detected")
@@ -167,39 +181,21 @@ void OnChartEvent(const int id,
                   const double &dparam,
                   const string &sparam)
 {
-   if(id == CHARTEVENT_OBJECT_CLICK)
-   {
-      string prefix = "ITIP_DB_";
-      if(sparam == prefix + "BtnBuy")
-      {
-         double atr = g_market.GetATR(PERIOD_H1);
-         double size = g_risk.CalculatePositionSize(150, atr);
-         if(size > 0) g_execution.ExecuteBuy(size, 0, 0);
-         ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
-      }
-      else if(sparam == prefix + "BtnSell")
-      {
-         double atr = g_market.GetATR(PERIOD_H1);
-         double size = g_risk.CalculatePositionSize(150, atr);
-         if(size > 0) g_execution.ExecuteSell(size, 0, 0);
-         ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
-      }
-      else if(sparam == prefix + "BtnClose")
-      {
-         g_execution.CloseAllPositions();
-         ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
-      }
-      else if(sparam == prefix + "BtnPart")
-      {
-         g_execution.PartialClosePositions(50.0);
-         ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
-      }
-      else if(sparam == prefix + "BtnBE")
-      {
-         g_execution.AutoTrailingAndBreakeven();
-         ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
-      }
-   }
+   if(id != CHARTEVENT_OBJECT_CLICK) return;
+
+   string prefix = "ITIP_DB_";
+   if(StringFind(sparam, prefix) != 0) return;
+
+   string button = StringSubstr(sparam, StringLen(prefix));
+
+   if(button == "BtnBuy")       ManualEntry(true);
+   else if(button == "BtnSell") ManualEntry(false);
+   else if(button == "BtnClose") g_execution.CloseAllPositions();
+   else if(button == "BtnPart")  g_execution.PartialClosePositions(50.0);
+   else if(button == "BtnBE")    g_execution.AutoTrailingAndBreakeven();
+   else return;
+
+   ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
 }
 
 //+------------------------------------------------------------------+
