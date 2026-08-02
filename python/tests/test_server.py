@@ -204,6 +204,23 @@ class TestListSignals:
             "signals": [],
         }
 
+    def test_filtering_tolerates_non_string_fields(self, client, server):
+        with open(server.JSON_PATH, "w") as f:
+            json.dump(
+                [
+                    {"symbol": 123, "direction": None},
+                    {"symbol": "EURUSD", "direction": "BUY"},
+                ],
+                f,
+            )
+
+        body = client.get(
+            "/api/signals", params={"symbol": "eurusd", "direction": "buy"}
+        ).json()
+
+        assert body["total"] == 1
+        assert body["signals"][0]["symbol"] == "EURUSD"
+
     @pytest.mark.parametrize("limit", [0, -1, 501])
     def test_rejects_out_of_range_limit(self, client, limit):
         assert client.get("/api/signals", params={"limit": limit}).status_code == 422
@@ -325,11 +342,12 @@ class TestMonteCarlo:
         "params",
         [
             {"simulations": 0},
-            {"simulations": 100001},
+            {"simulations": 10001},
             {"initial_capital": 0},
             {"win_rate": 1.5},
             {"win_rate": -0.1},
             {"trades": 0},
+            {"trades": 201},
         ],
     )
     def test_rejects_invalid_parameters_instead_of_crashing(self, client, params):

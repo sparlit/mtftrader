@@ -111,10 +111,14 @@ def list_signals(
 ):
     signals = read_signals()
     if symbol:
-        signals = [s for s in signals if s.get("symbol", "").upper() == symbol.upper()]
+        signals = [
+            s for s in signals if str(s.get("symbol", "")).upper() == symbol.upper()
+        ]
     if direction:
         signals = [
-            s for s in signals if s.get("direction", "").upper() == direction.upper()
+            s
+            for s in signals
+            if str(s.get("direction", "")).upper() == direction.upper()
         ]
 
     newest_first = list(reversed(signals))[:limit]
@@ -167,10 +171,11 @@ def get_portfolio_correlation():
 
 @app.get("/api/monte_carlo")
 def run_monte_carlo(
-    simulations: int = Query(1000, ge=1, le=100000),
+    # Caps keep a single request well under a second of pure-Python looping
+    simulations: int = Query(1000, ge=1, le=10000),
     initial_capital: float = Query(10000.0, gt=0),
     win_rate: float = Query(0.55, ge=0.0, le=1.0),
-    trades: int = Query(50, ge=1, le=1000),
+    trades: int = Query(50, ge=1, le=200),
 ):
     results = []
     for _ in range(simulations):
