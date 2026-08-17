@@ -24,6 +24,8 @@ private:
    datetime m_lastSignalTime;
    int m_persistenceCount;
    int m_requiredPersistence;
+   int m_divergenceRsiHandle;
+   bool m_divergenceWarned;
 
 public:
    CStrategyBrain()
@@ -33,9 +35,19 @@ public:
       m_lastSignalTime = 0;
       m_persistenceCount = 0;
       m_requiredPersistence = 3; // Persistence factor (anti-whiplash)
+      m_divergenceWarned = false;
+
+      ResetLastError();
+      m_divergenceRsiHandle = iRSI(m_symbol, PERIOD_M15, 14, PRICE_CLOSE);
+      if(m_divergenceRsiHandle == INVALID_HANDLE)
+         PrintFormat("StrategyBrain: Failed to create M15 RSI handle for %s (error %d); divergence scanning is disabled.",
+                     m_symbol, GetLastError());
    }
 
-   ~CStrategyBrain() {}
+   ~CStrategyBrain()
+   {
+      if(m_divergenceRsiHandle != INVALID_HANDLE) IndicatorRelease(m_divergenceRsiHandle);
+   }
 
    ENUM_SIGNAL Evaluate(CMarketBrain &market, double &outConfidence)
    {
@@ -54,7 +66,15 @@ public:
 
       // Volatility check
       double atr = market.GetATR(PERIOD_H1);
-      double currentSpread = SymbolInfoDouble(m_symbol, SYMBOL_ASK) - SymbolInfoDouble(m_symbol, SYMBOL_BID);
+      double ask = SymbolInfoDouble(m_symbol, SYMBOL_ASK);
+      double bid = SymbolInfoDouble(m_symbol, SYMBOL_BID);
+      if(ask <= 0.0 || bid <= 0.0)
+      {
+         PrintFormat("StrategyBrain: Unusable quote for %s (bid %.5f, ask %.5f); suppressing signal.", m_symbol, bid, ask);
+         outConfidence = 0.0;
+         return SIGNAL_NONE;
+      }
+      double currentSpread = ask - bid;
 
       // If spread exceeds ATR, volatility filter is triggered (no trade)
       if(atr > 0 && currentSpread > atr * 0.5)
@@ -92,20 +112,39 @@ public:
 
    bool DetectDivergence(CMarketBrain &market, string &outDetails)
    {
+      if(m_divergenceRsiHandle == INVALID_HANDLE) return false;
+
       // Fast check for price vs RSI divergence on M15
       MqlRates rates[];
       ArraySetAsSeries(rates, true);
+      ResetLastError();
       int copied = CopyRates(m_symbol, PERIOD_M15, 0, 5, rates);
-      if(copied < 5) return false;
-
-      int handle = iRSI(m_symbol, PERIOD_M15, 14, PRICE_CLOSE);
-      if(handle == INVALID_HANDLE) return false;
+      if(copied < 5)
+      {
+         if(!m_divergenceWarned)
+         {
+            PrintFormat("StrategyBrain: Only %d of 5 M15 bars available for %s (error %d); divergence check skipped.",
+                        copied, m_symbol, GetLastError());
+            m_divergenceWarned = true;
+         }
+         return false;
+      }
 
       double rsiBuf[];
       ArraySetAsSeries(rsiBuf, true);
-      int copiedRsi = CopyBuffer(handle, 0, 0, 5, rsiBuf);
-      IndicatorRelease(handle);
-      if(copiedRsi < 5) return false;
+      ResetLastError();
+      int copiedRsi = CopyBuffer(m_divergenceRsiHandle, 0, 0, 5, rsiBuf);
+      if(copiedRsi < 5)
+      {
+         if(!m_divergenceWarned)
+         {
+            PrintFormat("StrategyBrain: Only %d of 5 M15 RSI values available for %s (error %d); divergence check skipped.",
+                        copiedRsi, m_symbol, GetLastError());
+            m_divergenceWarned = true;
+         }
+         return false;
+      }
+      m_divergenceWarned = false;
 
       // Classic Bullish Divergence: Price Lower Low vs RSI Higher Low
       if(rates[0].low < rates[4].low && rsiBuf[0] > rsiBuf[4] && rsiBuf[0] < 35)

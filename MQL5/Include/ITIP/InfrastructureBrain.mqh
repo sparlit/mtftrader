@@ -22,7 +22,7 @@ public:
 
    ~CInfrastructureBrain() {}
 
-   void SendSignal(string symbol, string timeframe, string direction, double confidence, string session, double atr, double rsi)
+   bool SendSignal(string symbol, string timeframe, string direction, double confidence, string session, double atr, double rsi)
    {
       // Format payload using exact schema of fastapi SignalRequest
       string payload = StringFormat(
@@ -32,6 +32,8 @@ public:
 
       char post[];
       char result[];
+      string requestHeaders = "Content-Type: application/json\r\n";
+      string responseHeaders = "";
       string headers = "Content-Type: application/json\r\n";
       // Attach API key when the backend enforces auth (ITIP_API_KEY set).
       if(StringLen(m_apiKey) > 0)
@@ -39,16 +41,23 @@ public:
 
       StringToCharArray(payload, post, 0, StringLen(payload));
 
-      // Perform asynchronous native web request to pipeline analytics to python
-      int res = WebRequest("POST", m_url, headers, 1000, post, result, headers);
+      ResetLastError();
+      int res = WebRequest("POST", m_url, requestHeaders, 1000, post, result, responseHeaders);
       if(res == -1)
       {
-         // Log internally or handle offline status gracefully
-         Print("InfrastructureBrain: HTTP Link Offline or URL not whitelisted in MT5 Terminal Settings.");
+         PrintFormat("InfrastructureBrain: WebRequest to %s failed (error %d). Ensure the URL is whitelisted in MT5 Terminal Settings and the backend is running.",
+                     m_url, GetLastError());
+         return false;
       }
-      else
+
+      if(res < 200 || res >= 300)
       {
-         Print("InfrastructureBrain: Real-time API Signal synced successfully. HTTP Status: ", res);
+         PrintFormat("InfrastructureBrain: Backend rejected signal. HTTP Status: %d. Response: %s",
+                     res, CharArrayToString(result));
+         return false;
       }
+
+      PrintFormat("InfrastructureBrain: Real-time API Signal synced successfully. HTTP Status: %d", res);
+      return true;
    }
 };

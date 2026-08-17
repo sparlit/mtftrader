@@ -1,12 +1,19 @@
+import html
 import time
 import random
 from fastapi import FastAPI
 import json
+import logging
 import os
 import csv
 import html
 import secrets
 import random
+import tempfile
+import time
+from typing import Any, Dict, List
+
+from fastapi import FastAPI, HTTPException, Query
 from typing import Optional
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from fastapi.responses import HTMLResponse
@@ -14,7 +21,31 @@ from pydantic import BaseModel, Field
 
 from signal_store import append_signal, init_store, read_signals
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+LOGGER = logging.getLogger("itip.server")
+
 app = FastAPI(title="ITIP AI & Analytics Backend v1.0")
+
+# CSV & JSON Logging Path
+LOG_DIR = os.environ.get("ITIP_LOG_DIR", "./logs")
+CSV_PATH = os.path.join(LOG_DIR, "signals_log.csv")
+JSON_PATH = os.path.join(LOG_DIR, "signals_log.json")
+CSV_HEADER = "timestamp,symbol,timeframe,direction,confidence,session,atr,rsi\n"
+MAX_SIMULATIONS = 200_000
+
+
+def initLogStorage() -> None:
+    """Create the log directory and CSV header, failing loudly if storage is unusable."""
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        if not os.path.exists(CSV_PATH):
+            with open(CSV_PATH, "w") as f:
+                f.write(CSV_HEADER)
+    except OSError as exc:
+        raise RuntimeError(f"ITIP cannot initialise signal log storage at {LOG_DIR!r}: {exc}") from exc
+
+
+initLogStorage()
 
 init_store()
 CSV_COLUMNS = [
@@ -70,6 +101,42 @@ class TradeStats(BaseModel):
     profit_factor: float = Field(ge=0.0)
     max_drawdown: float = Field(ge=0.0)
 
+
+def readSignalHistory() -> List[Dict[str, Any]]:
+    """Return the persisted signal history, quarantining an unreadable log instead of hiding it."""
+    if not os.path.exists(JSON_PATH):
+        return []
+    try:
+        with open(JSON_PATH, "r") as f:
+            history = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        quarantinePath = f"{JSON_PATH}.corrupt.{int(time.time())}"
+        LOGGER.error("Signal history at %s is unreadable (%s); moving it to %s", JSON_PATH, exc, quarantinePath)
+        try:
+            os.replace(JSON_PATH, quarantinePath)
+        except OSError as moveExc:
+            LOGGER.error("Could not quarantine corrupt signal history: %s", moveExc)
+        return []
+
+    if not isinstance(history, list):
+        LOGGER.error("Signal history at %s is not a JSON list (got %s); ignoring it", JSON_PATH, type(history).__name__)
+        return []
+    return [entry for entry in history if isinstance(entry, dict)]
+
+
+def writeSignalHistory(history: List[Dict[str, Any]]) -> None:
+    """Atomically persist the signal history so a failed write cannot truncate the existing log."""
+    directory = os.path.dirname(JSON_PATH) or "."
+    tmpFd, tmpPath = tempfile.mkstemp(dir=directory, prefix=".signals_log.", suffix=".json")
+    try:
+        with os.fdopen(tmpFd, "w") as f:
+            json.dump(history, f, indent=4)
+        os.replace(tmpPath, JSON_PATH)
+    except OSError:
+        if os.path.exists(tmpPath):
+            os.unlink(tmpPath)
+        raise
+
 @app.get("/")
 def read_root():
     return {
@@ -87,6 +154,13 @@ def log_signal(req: SignalRequest):
 def log_signal(req: SignalRequest, _: None = Depends(require_api_key)):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
 
+    # Save to CSV
+    try:
+        with open(CSV_PATH, "a") as f:
+            f.write(f"{timestamp},{req.symbol},{req.timeframe},{req.direction},{req.confidence},{req.session},{req.atr},{req.rsi}\n")
+    except OSError as exc:
+        LOGGER.exception("Failed to append signal to %s", CSV_PATH)
+        raise HTTPException(status_code=500, detail=f"Could not write CSV signal log: {exc}") from exc
     # Save to CSV (csv module quotes fields; _csv_safe blocks formula injection)
     with open(CSV_PATH, "a", newline="") as f:
         csv.writer(f).writerow([
@@ -112,6 +186,15 @@ def log_signal(req: SignalRequest, _: None = Depends(require_api_key)):
         "rsi": req.rsi
     }
 
+    existing_data = readSignalHistory()
+    existing_data.append(signal_data)
+    try:
+        writeSignalHistory(existing_data)
+    except OSError as exc:
+        LOGGER.exception("Failed to persist signal history to %s", JSON_PATH)
+        raise HTTPException(status_code=500, detail=f"Could not write JSON signal log: {exc}") from exc
+
+    return {"status": "SUCCESS", "message": "Signal logged", "data": signal_data}
     existing_data = []
     if os.path.exists(JSON_PATH):
         try:
@@ -138,6 +221,8 @@ def get_portfolio_correlation():
 
 @app.get("/api/monte_carlo")
 def run_monte_carlo(
+    simulations: int = Query(1000, ge=1, le=MAX_SIMULATIONS),
+    initial_capital: float = Query(10000.0, gt=0.0),
     simulations: int = Query(1000, ge=1, le=100000),
     initial_capital: float = Query(10000.0, gt=0.0, le=1e12),
     win_rate: float = Query(0.55, ge=0.0, le=1.0),
@@ -174,6 +259,25 @@ def stat_card(label: str, value: str, value_class: str = "text-slate-100") -> st
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def get_web_dashboard():
+    # Read raw signals for visualization
+    signals = readSignalHistory()
+
+    # Reverse signals to show newest first
+    signals.reverse()
+    signals_html = ""
+    for s in signals[:10]: # show latest 10 signals
+        cell = {key: html.escape(str(s.get(key, "-"))) for key in
+                ("timestamp", "symbol", "timeframe", "direction", "confidence", "session", "atr")}
+        dir_class = "text-emerald-500" if "BUY" in cell["direction"].upper() else "text-rose-500"
+        signals_html += f"""
+        <tr class="border-b border-slate-700 bg-slate-900/40">
+            <td class="p-3 text-slate-400">{cell["timestamp"]}</td>
+            <td class="p-3 font-semibold text-slate-100">{cell["symbol"]}</td>
+            <td class="p-3 text-slate-300">{cell["timeframe"]}</td>
+            <td class="p-3 font-bold {dir_class}">{cell["direction"]}</td>
+            <td class="p-3 text-cyan-400 font-semibold">{cell["confidence"]}%</td>
+            <td class="p-3 text-slate-300">{cell["session"]}</td>
+            <td class="p-3 text-slate-400">{cell["atr"]}</td>
     # Read raw signals for visualization, newest first
     signals = read_signals()
     signals.reverse()
