@@ -20,6 +20,7 @@ input double   RiskPercent = 2.0;       // Max Account Risk Percent
 input double   DrawdownLimit = 5.0;     // Daily Max Drawdown Circuit Breaker
 input string   ZmqHost = "localhost";   // python API bridge endpoint
 input int      ZmqPort = 5555;          // Fast API bridge port
+input string   ApiKey = "";              // Backend API key (set if ITIP_API_KEY enabled)
 input bool     PlayAudioAlerts = true;  // Enable synthesizer sound alerts
 input bool     SendPushAlerts = false;  // Enable mobile app push alerts
 input bool     SendEmailAlerts = false; // Enable email notification alerts
@@ -46,7 +47,7 @@ int OnInit()
    g_risk = new CRiskBrain();
    g_execution = new CExecutionBrain();
    g_dashboard = new CDashboardBrain();
-   g_infrastructure = new CInfrastructureBrain(ZmqHost, ZmqPort);
+   g_infrastructure = new CInfrastructureBrain(ZmqHost, ZmqPort, ApiKey);
 
    // Draw Panel Layout
    g_dashboard.DrawPanel();
