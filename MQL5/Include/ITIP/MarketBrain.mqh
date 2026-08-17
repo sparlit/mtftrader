@@ -8,6 +8,7 @@
 #property version   "1.00"
 
 #include <Trade\Trade.mqh>
+#include "Common.mqh"
 
 // Struct for Timeframe info
 struct TFData
@@ -24,23 +25,6 @@ struct TFData
    string timerStr;
 };
 
-// Struct for SMC Objects
-struct OrderBlock
-{
-   double top;
-   double bottom;
-   bool isBullish;
-   bool isMitigated;
-};
-
-struct FVG
-{
-   double top;
-   double bottom;
-   bool isBullish;
-   bool isMitigated;
-};
-
 class CMarketBrain
 {
 private:
@@ -49,8 +33,8 @@ private:
    double m_cumDelta;
 
    // Handle arrays for static reuse
-   int m_rsiHandles[8];
-   int m_atrHandles[8];
+   int m_rsiHandles[ITIP_TF_COUNT];
+   int m_atrHandles[ITIP_TF_COUNT];
 
    // Latched warning flags so a persistent data outage is reported once instead of every tick
    bool m_rsiWarned[8];
@@ -60,11 +44,11 @@ private:
    bool m_handlesReady;
 
    // Order Blocks and FVG lists
-   OrderBlock m_obList[];
-   FVG m_fvgList[];
+   PriceZone m_obList[];
+   PriceZone m_fvgList[];
 
 public:
-   TFData timeframes[8];
+   TFData timeframes[ITIP_TF_COUNT];
 
    CMarketBrain()
    {
@@ -77,7 +61,7 @@ public:
 
    ~CMarketBrain()
    {
-      for(int i = 0; i < 8; i++)
+      for(int i = 0; i < ITIP_TF_COUNT; i++)
       {
          if(m_rsiHandles[i] != INVALID_HANDLE) IndicatorRelease(m_rsiHandles[i]);
          if(m_atrHandles[i] != INVALID_HANDLE) IndicatorRelease(m_atrHandles[i]);
@@ -86,11 +70,11 @@ public:
 
    void InitTimeframes()
    {
-      ENUM_TIMEFRAMES tfs[8] = {PERIOD_M5, PERIOD_M15, PERIOD_M30, PERIOD_H1, PERIOD_H4, PERIOD_D1, PERIOD_W1, PERIOD_MN1};
-      string names[8] = {"M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN"};
-      int secs[8] = {300, 900, 1800, 3600, 14400, 86400, 604800, 2592000};
+      ENUM_TIMEFRAMES tfs[ITIP_TF_COUNT] = {PERIOD_M5, PERIOD_M15, PERIOD_M30, PERIOD_H1, PERIOD_H4, PERIOD_D1, PERIOD_W1, PERIOD_MN1};
+      string names[ITIP_TF_COUNT] = {"M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN"};
+      int secs[ITIP_TF_COUNT] = {300, 900, 1800, 3600, 14400, 86400, 604800, 2592000};
 
-      for(int i = 0; i < 8; i++)
+      for(int i = 0; i < ITIP_TF_COUNT; i++)
       {
          timeframes[i].tf = tfs[i];
          timeframes[i].name = names[i];
@@ -100,7 +84,7 @@ public:
          timeframes[i].lastBarTime = 0;
          timeframes[i].rsiVal = 50.0;
          timeframes[i].atrVal = 0.0;
-         timeframes[i].bias = "NEUTRAL";
+         timeframes[i].bias = ITIP_BIAS_NEUTRAL;
          timeframes[i].timerStr = "00:00";
          m_rsiWarned[i] = false;
          m_atrWarned[i] = false;
@@ -113,6 +97,7 @@ public:
    {
       bool ok = true;
       for(int i = 0; i < 8; i++)
+      for(int i = 0; i < ITIP_TF_COUNT; i++)
       {
          ResetLastError();
          m_rsiHandles[i] = iRSI(m_symbol, timeframes[i].tf, 14, PRICE_CLOSE);
@@ -146,14 +131,12 @@ public:
          double close = SymbolInfoDouble(m_symbol, SYMBOL_LAST);
          if (close == 0) close = bid;
          double mid = (bid + ask) / 2.0;
-         double pct = (close - mid) / (spread);
-         if(pct > 1.0) pct = 1.0;
-         if(pct < -1.0) pct = -1.0;
+         double pct = ClampDouble((close - mid) / spread, -1.0, 1.0);
          m_cumDelta += tickVolume * pct;
       }
 
       // Update remaining timers and bar state
-      for(int i = 0; i < 8; i++)
+      for(int i = 0; i < ITIP_TF_COUNT; i++)
       {
          datetime barTime = iSeriesTime(m_symbol, timeframes[i].tf, 0);
          if(barTime == 0)
@@ -196,19 +179,8 @@ public:
          if(remaining < 0) remaining = 0;
 
          timeframes[i].secondsRemaining = remaining;
-         timeframes[i].progressPercent = 100.0 * (double)(totalSecs - remaining) / (double)totalSecs;
-         if(timeframes[i].progressPercent > 100.0) timeframes[i].progressPercent = 100.0;
-         if(timeframes[i].progressPercent < 0.0) timeframes[i].progressPercent = 0.0;
-
-         // Format timer string
-         int hrs = remaining / 3600;
-         int mins = (remaining % 3600) / 60;
-         int secsVal = remaining % 60;
-
-         if(hrs > 0)
-            timeframes[i].timerStr = StringFormat("%02dh:%02dm:%02ds", hrs, mins, secsVal);
-         else
-            timeframes[i].timerStr = StringFormat("%02dm:%02ds", mins, secsVal);
+         timeframes[i].progressPercent = ClampDouble(100.0 * (double)(totalSecs - remaining) / (double)totalSecs, 0.0, 100.0);
+         timeframes[i].timerStr = FormatCountdown(remaining);
 
          UpdateTechnicalIndicators(i);
       }
@@ -253,14 +225,10 @@ public:
             m_atrWarned[index] = true;
          }
       }
+      ReadIndicatorValue(m_rsiHandles[index], timeframes[index].rsiVal);
+      ReadIndicatorValue(m_atrHandles[index], timeframes[index].atrVal);
 
-      // Determine Bias
-      if(timeframes[index].rsiVal > 55)
-         timeframes[index].bias = "BULLISH";
-      else if(timeframes[index].rsiVal < 45)
-         timeframes[index].bias = "BEARISH";
-      else
-         timeframes[index].bias = "NEUTRAL";
+      timeframes[index].bias = BiasFromRSI(timeframes[index].rsiVal);
    }
 
    void DetectSMC()
@@ -288,25 +256,13 @@ public:
       {
          if(rates[i-1].low > rates[i+1].high && rates[i].close > rates[i].open)
          {
-            FVG fvg;
-            fvg.top = rates[i-1].low;
-            fvg.bottom = rates[i+1].high;
-            fvg.isBullish = true;
-            fvg.isMitigated = false;
-            int size = ArraySize(m_fvgList);
-            ArrayResize(m_fvgList, size + 1);
-            m_fvgList[size] = fvg;
+            PriceZone fvg = MakePriceZone(rates[i-1].low, rates[i+1].high, true);
+            ArrayAppend(m_fvgList, fvg);
          }
          else if(rates[i-1].high < rates[i+1].low && rates[i].close < rates[i].open)
          {
-            FVG fvg;
-            fvg.top = rates[i+1].low;
-            fvg.bottom = rates[i-1].high;
-            fvg.isBullish = false;
-            fvg.isMitigated = false;
-            int size = ArraySize(m_fvgList);
-            ArrayResize(m_fvgList, size + 1);
-            m_fvgList[size] = fvg;
+            PriceZone fvg = MakePriceZone(rates[i+1].low, rates[i-1].high, false);
+            ArrayAppend(m_fvgList, fvg);
          }
       }
 
@@ -314,25 +270,13 @@ public:
       {
          if(rates[i-1].close < rates[i-1].open && rates[i].close > rates[i].open && rates[i].close > rates[i-1].high)
          {
-            OrderBlock ob;
-            ob.top = rates[i-1].high;
-            ob.bottom = rates[i-1].low;
-            ob.isBullish = true;
-            ob.isMitigated = false;
-            int size = ArraySize(m_obList);
-            ArrayResize(m_obList, size + 1);
-            m_obList[size] = ob;
+            PriceZone ob = MakePriceZone(rates[i-1].high, rates[i-1].low, true);
+            ArrayAppend(m_obList, ob);
          }
          if(rates[i-1].close > rates[i-1].open && rates[i].close < rates[i].open && rates[i].close < rates[i-1].low)
          {
-            OrderBlock ob;
-            ob.top = rates[i-1].high;
-            ob.bottom = rates[i-1].low;
-            ob.isBullish = false;
-            ob.isMitigated = false;
-            int size = ArraySize(m_obList);
-            ArrayResize(m_obList, size + 1);
-            m_obList[size] = ob;
+            PriceZone ob = MakePriceZone(rates[i-1].high, rates[i-1].low, false);
+            ArrayAppend(m_obList, ob);
          }
       }
    }
@@ -343,7 +287,7 @@ public:
 
    double GetATR(ENUM_TIMEFRAMES tf)
    {
-      for(int i=0; i<8; i++)
+      for(int i=0; i<ITIP_TF_COUNT; i++)
          if(timeframes[i].tf == tf) return timeframes[i].atrVal;
       return 0.0;
    }

@@ -46,14 +46,54 @@ private:
       if(!EnsureObject(objName, OBJ_LABEL)) return;
       if(created)
       {
+   // Creates the object with the properties shared by every dashboard element.
+   // Returns the object name; newlyCreated tells whether one-time setup is needed.
+   string EnsureObject(string name, ENUM_OBJECT type, int x, int y, bool &newlyCreated)
+   {
+      string objName = m_prefix + name;
+      newlyCreated = (ObjectFind(0, objName) < 0);
+      if(newlyCreated)
+      {
+         ObjectCreate(0, objName, type, 0, 0, 0);
          ObjectSetInteger(0, objName, OBJPROP_XDISTANCE, x);
          ObjectSetInteger(0, objName, OBJPROP_YDISTANCE, y);
-         ObjectSetString(0, objName, OBJPROP_FONT, "Segoe UI");
-         ObjectSetInteger(0, objName, OBJPROP_FONTSIZE, fontSize);
          ObjectSetInteger(0, objName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-         ObjectSetInteger(0, objName, OBJPROP_ANCHOR, anchor);
          ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
          ObjectSetInteger(0, objName, OBJPROP_HIDDEN, true);
+      }
+      return objName;
+   }
+
+   int TableStartX() { return m_xOffset + 15; }
+   int TableY()      { return m_yOffset + 110; }
+   int RowY(int row) { return TableY() + 25 + (row * 26); }
+   int RowRightX()   { return m_xOffset + m_width - 250; }
+
+   // Center X of the table columns: TF, timer, RSI, ATR, progress
+   int ColumnCenterX(int column)
+   {
+      int offsets[5] = {32, 65 + 60, 65 + 120 + 52, 65 + 120 + 105 + 60, 65 + 120 + 105 + 120 + 75};
+      return TableStartX() + offsets[column];
+   }
+
+   int ProgressBarX() { return TableStartX() + 65 + 120 + 105 + 120 + 15; }
+
+   color BiasColor(string bias)
+   {
+      if(bias == ITIP_BIAS_BULLISH) return m_bullColor;
+      if(bias == ITIP_BIAS_BEARISH) return m_bearColor;
+      return m_textColor;
+   }
+
+   void CreateLabel(string name, int x, int y, string text, int fontSize, color textColor, ENUM_ANCHOR_POINT anchor = ANCHOR_LEFT_UPPER)
+   {
+      bool created;
+      string objName = EnsureObject(name, OBJ_LABEL, x, y, created);
+      if(created)
+      {
+         ObjectSetString(0, objName, OBJPROP_FONT, "Segoe UI");
+         ObjectSetInteger(0, objName, OBJPROP_FONTSIZE, fontSize);
+         ObjectSetInteger(0, objName, OBJPROP_ANCHOR, anchor);
       }
       ObjectSetString(0, objName, OBJPROP_TEXT, text);
       ObjectSetInteger(0, objName, OBJPROP_COLOR, textColor);
@@ -68,13 +108,14 @@ private:
       {
          ObjectSetInteger(0, objName, OBJPROP_XDISTANCE, x1);
          ObjectSetInteger(0, objName, OBJPROP_YDISTANCE, y1);
+      bool created;
+      string objName = EnsureObject(name, OBJ_RECTANGLE_LABEL, x1, y1, created);
+      if(created)
+      {
          ObjectSetInteger(0, objName, OBJPROP_XSIZE, x2 - x1);
          ObjectSetInteger(0, objName, OBJPROP_YSIZE, y2 - y1);
          ObjectSetInteger(0, objName, OBJPROP_BORDER_TYPE, BORDER_FLAT);
-         ObjectSetInteger(0, objName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
          ObjectSetInteger(0, objName, OBJPROP_BACK, false);
-         ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
-         ObjectSetInteger(0, objName, OBJPROP_HIDDEN, true);
       }
       ObjectSetInteger(0, objName, OBJPROP_BGCOLOR, bg);
       ObjectSetInteger(0, objName, OBJPROP_BORDER_COLOR, border);
@@ -90,14 +131,15 @@ private:
       {
          ObjectSetInteger(0, objName, OBJPROP_XDISTANCE, x);
          ObjectSetInteger(0, objName, OBJPROP_YDISTANCE, y);
+      bool created;
+      string objName = EnsureObject(name, OBJ_BUTTON, x, y, created);
+      if(created)
+      {
          ObjectSetInteger(0, objName, OBJPROP_XSIZE, w);
          ObjectSetInteger(0, objName, OBJPROP_YSIZE, h);
          ObjectSetString(0, objName, OBJPROP_FONT, "Segoe UI Semibold");
          ObjectSetInteger(0, objName, OBJPROP_FONTSIZE, 10);
          ObjectSetInteger(0, objName, OBJPROP_BORDER_COLOR, C'64,64,64');
-         ObjectSetInteger(0, objName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-         ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
-         ObjectSetInteger(0, objName, OBJPROP_HIDDEN, true);
       }
       ObjectSetString(0, objName, OBJPROP_TEXT, text);
       ObjectSetInteger(0, objName, OBJPROP_BGCOLOR, bg);
@@ -135,21 +177,19 @@ public:
       int widgetY = m_yOffset + 50;
       CreateLabel("StatusHeader", m_xOffset + 15, widgetY, "SYSTEM MONITORING", 10, m_accentColor);
 
-      int tableY = m_yOffset + 110;
-      CreateRect("TableHeader", m_xOffset + 15, tableY, m_xOffset + m_width - 250, tableY + 25, C'33,33,47', C'60,60,75');
+      int tableY = TableY();
+      CreateRect("TableHeader", TableStartX(), tableY, RowRightX(), tableY + 25, C'33,33,47', C'60,60,75');
 
-      int startX = m_xOffset + 15;
+      CreateLabel("H_TF", ColumnCenterX(0), tableY + 4, "TF", 9, m_textColor, ANCHOR_CENTER);
+      CreateLabel("H_Timer", ColumnCenterX(1), tableY + 4, "CANDLE TIMER", 9, m_textColor, ANCHOR_CENTER);
+      CreateLabel("H_RSI", ColumnCenterX(2), tableY + 4, "RSI (14)", 9, m_textColor, ANCHOR_CENTER);
+      CreateLabel("H_ATR", ColumnCenterX(3), tableY + 4, "ATR", 9, m_textColor, ANCHOR_CENTER);
+      CreateLabel("H_Progress", ColumnCenterX(4), tableY + 4, "PROGRESS BAR", 9, m_textColor, ANCHOR_CENTER);
 
-      CreateLabel("H_TF", startX + 32, tableY + 4, "TF", 9, m_textColor, ANCHOR_CENTER);
-      CreateLabel("H_Timer", startX + 65 + 60, tableY + 4, "CANDLE TIMER", 9, m_textColor, ANCHOR_CENTER);
-      CreateLabel("H_RSI", startX + 65 + 120 + 52, tableY + 4, "RSI (14)", 9, m_textColor, ANCHOR_CENTER);
-      CreateLabel("H_ATR", startX + 65 + 120 + 105 + 60, tableY + 4, "ATR", 9, m_textColor, ANCHOR_CENTER);
-      CreateLabel("H_Progress", startX + 65 + 120 + 105 + 120 + 75, tableY + 4, "PROGRESS BAR", 9, m_textColor, ANCHOR_CENTER);
-
-      for(int i = 0; i < 8; i++)
+      for(int i = 0; i < ITIP_TF_COUNT; i++)
       {
-         int rowY = tableY + 25 + (i * 26);
-         CreateRect("Row_" + (string)i, m_xOffset + 15, rowY, m_xOffset + m_width - 250, rowY + 26, (i % 2 == 0) ? C'22,22,30' : C'18,18,24', C'40,40,50');
+         int rowY = RowY(i);
+         CreateRect("Row_" + (string)i, TableStartX(), rowY, RowRightX(), rowY + 26, (i % 2 == 0) ? C'22,22,30' : C'18,18,24', C'40,40,50');
       }
 
       int actionX = m_xOffset + m_width - 220;
@@ -178,40 +218,27 @@ public:
                                        aiConfidence, lastSignalStr, market.GetCumulativeDelta(), market.GetCurrentSession());
       CreateLabel("StatusTextVal", m_xOffset + 15, widgetY + 20, statusText, 10, m_textColor);
 
-      int tableY = m_yOffset + 110;
-      int startX = m_xOffset + 15;
-
-      for(int i = 0; i < 8; i++)
+      for(int i = 0; i < ITIP_TF_COUNT; i++)
       {
-         int rowY = tableY + 25 + (i * 26);
+         int rowY = RowY(i);
          TFData tf = market.timeframes[i];
 
-         string lblTF = "lblTF_" + (string)i;
-         CreateLabel(lblTF, startX + 32, rowY + 5, tf.name, 9, m_textColor, ANCHOR_CENTER);
+         CreateLabel("lblTF_" + (string)i, ColumnCenterX(0), rowY + 5, tf.name, 9, m_textColor, ANCHOR_CENTER);
 
-         string lblTimer = "lblTimer_" + (string)i;
-         CreateLabel(lblTimer, startX + 65 + 60, rowY + 5, tf.timerStr, 9, (tf.secondsRemaining < 60) ? m_bearColor : m_textColor, ANCHOR_CENTER);
+         CreateLabel("lblTimer_" + (string)i, ColumnCenterX(1), rowY + 5, tf.timerStr, 9,
+                     (tf.secondsRemaining < 60) ? m_bearColor : m_textColor, ANCHOR_CENTER);
 
-         string lblRSI = "lblRSI_" + (string)i;
-         color rsiCol = m_textColor;
-         if(tf.rsiVal > 55) rsiCol = m_bullColor;
-         else if(tf.rsiVal < 45) rsiCol = m_bearColor;
-         CreateLabel(lblRSI, startX + 65 + 120 + 52, rowY + 5, StringFormat("%.1f", tf.rsiVal), 9, rsiCol, ANCHOR_CENTER);
+         CreateLabel("lblRSI_" + (string)i, ColumnCenterX(2), rowY + 5, StringFormat("%.1f", tf.rsiVal), 9,
+                     BiasColor(BiasFromRSI(tf.rsiVal)), ANCHOR_CENTER);
 
-         string lblATR = "lblATR_" + (string)i;
-         CreateLabel(lblATR, startX + 65 + 120 + 105 + 60, rowY + 5, StringFormat("%.5f", tf.atrVal), 9, m_textColor, ANCHOR_CENTER);
+         CreateLabel("lblATR_" + (string)i, ColumnCenterX(3), rowY + 5, StringFormat("%.5f", tf.atrVal), 9, m_textColor, ANCHOR_CENTER);
 
-         string progBGName = "progBG_" + (string)i;
-         string progFillName = "progFill_" + (string)i;
-
-         int barX = startX + 65 + 120 + 105 + 120 + 15;
+         int barX = ProgressBarX();
          int barW = 120;
-         int fillW = (int)(barW * (tf.progressPercent / 100.0));
-         if(fillW < 1) fillW = 1;
-         if(fillW > barW) fillW = barW;
+         int fillW = (int)ClampDouble(barW * (tf.progressPercent / 100.0), 1, barW);
 
-         CreateRect(progBGName, barX, rowY + 6, barX + barW, rowY + 18, C'40,40,55', C'60,60,75');
-         CreateRect(progFillName, barX, rowY + 6, barX + fillW, rowY + 18, m_accentColor, m_accentColor);
+         CreateRect("progBG_" + (string)i, barX, rowY + 6, barX + barW, rowY + 18, C'40,40,55', C'60,60,75');
+         CreateRect("progFill_" + (string)i, barX, rowY + 6, barX + fillW, rowY + 18, m_accentColor, m_accentColor);
       }
 
       ChartRedraw(0);

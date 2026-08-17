@@ -20,6 +20,7 @@ input double   RiskPercent = 2.0;       // Max Account Risk Percent
 input double   DrawdownLimit = 5.0;     // Daily Max Drawdown Circuit Breaker
 input string   ZmqHost = "localhost";   // python API bridge endpoint
 input int      ZmqPort = 5555;          // Fast API bridge port
+input string   ApiKey = "";              // Backend API key (set if ITIP_API_KEY enabled)
 input bool     PlayAudioAlerts = true;  // Enable synthesizer sound alerts
 input bool     SendPushAlerts = false;  // Enable mobile app push alerts
 input bool     SendEmailAlerts = false; // Enable email notification alerts
@@ -46,7 +47,7 @@ int OnInit()
    g_risk = new CRiskBrain();
    g_execution = new CExecutionBrain();
    g_dashboard = new CDashboardBrain();
-   g_infrastructure = new CInfrastructureBrain(ZmqHost, ZmqPort);
+   g_infrastructure = new CInfrastructureBrain(ZmqHost, ZmqPort, ApiKey);
 
    if(!BrainsAvailable())
    {
@@ -132,6 +133,8 @@ void OnTick()
    double lastVolume = (double)SymbolInfoInteger(_Symbol, SYMBOL_VOLUME);
 
    g_market.Update(lastVolume, bid, ask);
+   double bid, ask;
+   RefreshMarket(bid, ask);
 
    // Active Divergence Scanner
    if(g_strategy.DetectDivergence(*g_market, g_divDetails))
@@ -164,6 +167,7 @@ void OnTick()
             }
          }
       }
+      TryEnter(true, bid, ask);
    }
    else if(signal == SIGNAL_SELL)
    {
@@ -188,6 +192,7 @@ void OnTick()
             }
          }
       }
+      TryEnter(false, bid, ask);
    }
    else
    {
@@ -196,9 +201,9 @@ void OnTick()
 }
 
 //+------------------------------------------------------------------+
-//| Timer function                                                   |
+//| Pushes the latest quote into the market brain                    |
 //+------------------------------------------------------------------+
-void OnTimer()
+void RefreshMarket(double &bid, double &ask)
 {
    if(!BrainsAvailable()) return;
 
@@ -207,8 +212,57 @@ void OnTimer()
    if(!CurrentQuote(bid, ask)) return;
 
    double lastVolume = (double)SymbolInfoInteger(_Symbol, SYMBOL_VOLUME);
+   double lastVolume = (double)SymbolInfoInteger(_Symbol, SYMBOL_VOLUME);
+   bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
    g_market.Update(lastVolume, bid, ask);
+}
+
+//+------------------------------------------------------------------+
+//| Risk-checked ATR based entry in the given direction              |
+//+------------------------------------------------------------------+
+void TryEnter(bool isBuy, double bid, double ask)
+{
+   if(!g_risk.AllowTrade()) return;
+
+   double atr = g_market.GetATR(PERIOD_H1);
+   double size = g_risk.CalculatePositionSize(200, atr);
+   if(size <= 0) return;
+
+   double sl = isBuy ? bid - (atr * 2.0) : ask + (atr * 2.0);
+   double tp = isBuy ? ask + (atr * 4.0) : bid - (atr * 4.0);
+
+   bool executed = isBuy ? g_execution.ExecuteBuy(size, sl, tp)
+                         : g_execution.ExecuteSell(size, sl, tp);
+   if(!executed) return;
+
+   string direction = isBuy ? "BUY" : "SELL";
+   TriggerAlerts(StringFormat("ITIP %s Alert: Target Entry triggered!", isBuy ? "Buy" : "Sell"));
+   g_infrastructure.SendSignal(_Symbol, "H1", direction, g_aiConfidence, g_market.GetCurrentSession(), atr, g_market.timeframes[3].rsiVal);
+}
+
+//+------------------------------------------------------------------+
+//| Manual (dashboard button) market order without SL/TP             |
+//+------------------------------------------------------------------+
+void ManualEntry(bool isBuy)
+{
+   double atr = g_market.GetATR(PERIOD_H1);
+   double size = g_risk.CalculatePositionSize(150, atr);
+   if(size <= 0) return;
+
+   if(isBuy) g_execution.ExecuteBuy(size, 0, 0);
+   else      g_execution.ExecuteSell(size, 0, 0);
+}
+
+//+------------------------------------------------------------------+
+//| Timer function                                                   |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+   // Redraw timers and elements every second for fluid real-time responsiveness
+   double bid, ask;
+   RefreshMarket(bid, ask);
 
    string finalStatus = g_lastSignalStr;
    if(g_divDetails != "No Divergence Detected")
@@ -270,6 +324,21 @@ void OnChartEvent(const int id,
          ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
       }
    }
+   if(id != CHARTEVENT_OBJECT_CLICK) return;
+
+   string prefix = "ITIP_DB_";
+   if(StringFind(sparam, prefix) != 0) return;
+
+   string button = StringSubstr(sparam, StringLen(prefix));
+
+   if(button == "BtnBuy")       ManualEntry(true);
+   else if(button == "BtnSell") ManualEntry(false);
+   else if(button == "BtnClose") g_execution.CloseAllPositions();
+   else if(button == "BtnPart")  g_execution.PartialClosePositions(50.0);
+   else if(button == "BtnBE")    g_execution.AutoTrailingAndBreakeven();
+   else return;
+
+   ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
 }
 
 //+------------------------------------------------------------------+

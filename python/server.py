@@ -1,15 +1,25 @@
 import html
+import time
+import random
+from fastapi import FastAPI
 import json
 import logging
 import os
+import csv
+import html
+import secrets
 import random
 import tempfile
 import time
 from typing import Any, Dict, List
 
 from fastapi import FastAPI, HTTPException, Query
+from typing import Optional
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from signal_store import append_signal, init_store, read_signals
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 LOGGER = logging.getLogger("itip.server")
@@ -37,20 +47,59 @@ def initLogStorage() -> None:
 
 initLogStorage()
 
+init_store()
+CSV_COLUMNS = [
+    "timestamp", "symbol", "timeframe", "direction",
+    "confidence", "session", "atr", "rsi",
+]
+
+# Optional API key auth. When ITIP_API_KEY is set, state-changing / expensive
+# endpoints require a matching X-API-Key header. Left unset only for local dev.
+API_KEY = os.environ.get("ITIP_API_KEY")
+
+
+def require_api_key(x_api_key: Optional[str] = Header(default=None)):
+    """Enforce API key auth when ITIP_API_KEY is configured."""
+    if not API_KEY:
+        return
+    if not x_api_key or not secrets.compare_digest(x_api_key, API_KEY):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API key",
+        )
+
+
+def _csv_safe(value: str) -> str:
+    """Neutralize spreadsheet formula injection in CSV cells."""
+    if value and value[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
+
+
+# Create CSV header if it doesn't exist
+if not os.path.exists(CSV_PATH):
+    with open(CSV_PATH, "w", newline="") as f:
+        csv.writer(f).writerow(CSV_COLUMNS)
+
+# Restrict free-text fields: printable, no separators/control chars that could
+# corrupt logs or be reflected into the dashboard.
+_TEXT = dict(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9_.\- ]+$")
+
 
 class SignalRequest(BaseModel):
-    symbol: str
-    timeframe: str
-    direction: str
-    confidence: float
-    session: str
-    atr: float
-    rsi: float
+    symbol: str = Field(**_TEXT)
+    timeframe: str = Field(**_TEXT)
+    direction: str = Field(**_TEXT)
+    confidence: float = Field(ge=0.0, le=100.0)
+    session: str = Field(**_TEXT)
+    atr: float = Field(ge=0.0, le=1e9)
+    rsi: float = Field(ge=0.0, le=100.0)
+
 
 class TradeStats(BaseModel):
-    win_rate: float
-    profit_factor: float
-    max_drawdown: float
+    win_rate: float = Field(ge=0.0, le=1.0)
+    profit_factor: float = Field(ge=0.0)
+    max_drawdown: float = Field(ge=0.0)
 
 
 def readSignalHistory() -> List[Dict[str, Any]]:
@@ -100,6 +149,9 @@ def read_root():
 
 @app.post("/api/signal")
 def log_signal(req: SignalRequest):
+    signal = dict(req.model_dump(), timestamp=time.strftime("%Y-%m-%d %H:%M:%S"))
+    stored = append_signal(signal)
+def log_signal(req: SignalRequest, _: None = Depends(require_api_key)):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
 
     # Save to CSV
@@ -109,6 +161,18 @@ def log_signal(req: SignalRequest):
     except OSError as exc:
         LOGGER.exception("Failed to append signal to %s", CSV_PATH)
         raise HTTPException(status_code=500, detail=f"Could not write CSV signal log: {exc}") from exc
+    # Save to CSV (csv module quotes fields; _csv_safe blocks formula injection)
+    with open(CSV_PATH, "a", newline="") as f:
+        csv.writer(f).writerow([
+            timestamp,
+            _csv_safe(req.symbol),
+            _csv_safe(req.timeframe),
+            _csv_safe(req.direction),
+            req.confidence,
+            _csv_safe(req.session),
+            req.atr,
+            req.rsi,
+        ])
 
     # Save to JSON
     signal_data = {
@@ -131,6 +195,15 @@ def log_signal(req: SignalRequest):
         raise HTTPException(status_code=500, detail=f"Could not write JSON signal log: {exc}") from exc
 
     return {"status": "SUCCESS", "message": "Signal logged", "data": signal_data}
+    existing_data = []
+    if os.path.exists(JSON_PATH):
+        try:
+            with open(JSON_PATH, "r") as f:
+                existing_data = json.load(f)
+        except Exception:
+            pass
+
+    return {"status": "SUCCESS", "message": "Signal logged", "data": stored}
 
 @app.get("/api/correlation")
 def get_portfolio_correlation():
@@ -150,6 +223,8 @@ def get_portfolio_correlation():
 def run_monte_carlo(
     simulations: int = Query(1000, ge=1, le=MAX_SIMULATIONS),
     initial_capital: float = Query(10000.0, gt=0.0),
+    simulations: int = Query(1000, ge=1, le=100000),
+    initial_capital: float = Query(10000.0, gt=0.0, le=1e12),
     win_rate: float = Query(0.55, ge=0.0, le=1.0),
 ):
     results = []
@@ -174,6 +249,14 @@ def run_monte_carlo(
         "min_ending_capital": round(min_ending, 2)
     }
 
+def stat_card(label: str, value: str, value_class: str = "text-slate-100") -> str:
+    return f"""
+                <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col space-y-2">
+                    <span class="text-xs text-slate-400 uppercase tracking-wider font-semibold">{label}</span>
+                    <span class="text-2xl font-bold {value_class}">{value}</span>
+                </div>"""
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 def get_web_dashboard():
     # Read raw signals for visualization
@@ -195,8 +278,34 @@ def get_web_dashboard():
             <td class="p-3 text-cyan-400 font-semibold">{cell["confidence"]}%</td>
             <td class="p-3 text-slate-300">{cell["session"]}</td>
             <td class="p-3 text-slate-400">{cell["atr"]}</td>
+    # Read raw signals for visualization, newest first
+    signals = read_signals()
+    signals.reverse()
+    signals_html = ""
+    for s in signals[:10]: # show latest 10 signals
+        direction = str(s.get("direction", ""))
+        dir_class = "text-emerald-500" if "BUY" in direction.upper() else "text-rose-500"
+        # Escape every field: stored values are attacker-controllable via /api/signal.
+        esc = {k: html.escape(str(s.get(k, ""))) for k in
+               ("timestamp", "symbol", "timeframe", "direction", "confidence", "session", "atr")}
+        signals_html += f"""
+        <tr class="border-b border-slate-700 bg-slate-900/40">
+            <td class="p-3 text-slate-400">{esc["timestamp"]}</td>
+            <td class="p-3 font-semibold text-slate-100">{esc["symbol"]}</td>
+            <td class="p-3 text-slate-300">{esc["timeframe"]}</td>
+            <td class="p-3 font-bold {dir_class}">{esc["direction"]}</td>
+            <td class="p-3 text-cyan-400 font-semibold">{esc["confidence"]}%</td>
+            <td class="p-3 text-slate-300">{esc["session"]}</td>
+            <td class="p-3 text-slate-400">{esc["atr"]}</td>
         </tr>
         """
+    stats_html = "".join([
+        stat_card("AI System Status", "ONLINE", "text-emerald-400"),
+        stat_card("Active Engine Threads", "8 (DPI-Aware)"),
+        stat_card("Active Timeframes", "8 TFs (M5-MN)", "text-cyan-400"),
+        stat_card("Inference Model", "ONNX Optimized"),
+    ])
+
     if not signals_html:
         signals_html = "<tr><td colspan='7' class='p-4 text-center text-slate-500'>No active signal logs yet. Run the MT5 EA to populate signals.</td></tr>"
 
@@ -233,23 +342,7 @@ def get_web_dashboard():
 
         <main class="max-w-7xl mx-auto px-6 py-8 space-y-8">
             <!-- Stats Row -->
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
-                <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col space-y-2">
-                    <span class="text-xs text-slate-400 uppercase tracking-wider font-semibold">AI System Status</span>
-                    <span class="text-2xl font-bold text-emerald-400">ONLINE</span>
-                </div>
-                <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col space-y-2">
-                    <span class="text-xs text-slate-400 uppercase tracking-wider font-semibold">Active Engine Threads</span>
-                    <span class="text-2xl font-bold text-slate-100">8 (DPI-Aware)</span>
-                </div>
-                <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col space-y-2">
-                    <span class="text-xs text-slate-400 uppercase tracking-wider font-semibold">Active Timeframes</span>
-                    <span class="text-2xl font-bold text-cyan-400">8 TFs (M5-MN)</span>
-                </div>
-                <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col space-y-2">
-                    <span class="text-xs text-slate-400 uppercase tracking-wider font-semibold">Inference Model</span>
-                    <span class="text-2xl font-bold text-slate-100">ONNX Optimized</span>
-                </div>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-6">{stats_html}
             </div>
 
             <!-- Signal Table -->
@@ -320,24 +413,18 @@ def get_web_dashboard():
                 const response = await fetch(`/api/monte_carlo?initial_capital=${{capital}}&win_rate=${{win_rate}}`);
                 const data = await response.json();
 
+                const metricCard = (label, value, valueClass) => `
+                        <div class="p-4 bg-slate-950 rounded-xl border border-slate-800">
+                            <span class="block text-xs text-slate-400 mb-1">${{label}}</span>
+                            <span class="text-xl font-bold ${{valueClass}}">${{value}}</span>
+                        </div>`;
+
                 document.getElementById('resultsContent').innerHTML = `
                     <div class="grid grid-cols-2 gap-4">
-                        <div class="p-4 bg-slate-950 rounded-xl border border-slate-800">
-                            <span class="block text-xs text-slate-400 mb-1">Average Projection</span>
-                            <span class="text-xl font-bold text-cyan-400">$${{data.average_ending_capital}}</span>
-                        </div>
-                        <div class="p-4 bg-slate-950 rounded-xl border border-slate-800">
-                            <span class="block text-xs text-slate-400 mb-1">Maximum Best Path</span>
-                            <span class="text-xl font-bold text-emerald-400">$${{data.max_ending_capital}}</span>
-                        </div>
-                        <div class="p-4 bg-slate-950 rounded-xl border border-slate-800">
-                            <span class="block text-xs text-slate-400 mb-1">Minimum Worst Path</span>
-                            <span class="text-xl font-bold text-rose-400">$${{data.min_ending_capital}}</span>
-                        </div>
-                        <div class="p-4 bg-slate-950 rounded-xl border border-slate-800">
-                            <span class="block text-xs text-slate-400 mb-1">Runs Simulated</span>
-                            <span class="text-xl font-bold text-slate-300">${{data.simulations}}</span>
-                        </div>
+                        ${{metricCard('Average Projection', '$' + data.average_ending_capital, 'text-cyan-400')}}
+                        ${{metricCard('Maximum Best Path', '$' + data.max_ending_capital, 'text-emerald-400')}}
+                        ${{metricCard('Minimum Worst Path', '$' + data.min_ending_capital, 'text-rose-400')}}
+                        ${{metricCard('Runs Simulated', data.simulations, 'text-slate-300')}}
                     </div>
                 `;
             }});
@@ -349,4 +436,7 @@ def get_web_dashboard():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=5555)
+    # Bind to loopback by default; set ITIP_HOST=0.0.0.0 to expose deliberately.
+    host = os.environ.get("ITIP_HOST", "127.0.0.1")
+    port = int(os.environ.get("ITIP_PORT", "5555"))
+    uvicorn.run(app, host=host, port=port)

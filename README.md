@@ -70,6 +70,20 @@ Once started, the interactive premium **ITIP Web Dashboard** is accessible local
   cargo run --manifest-path rust/Cargo.toml
   ```
 
+## Running Tests
+
+### Python (FastAPI backend)
+```bash
+pip install -r python/requirements-dev.txt
+pytest
+```
+Coverage for `python/server.py` is reported automatically.
+
+### Rust (Monte Carlo engine)
+```bash
+cargo test --manifest-path rust/Cargo.toml
+```
+
 ## Features Included
 - **Integrated Web Dashboard**: Clean Tailwind-driven web interface for viewing live pipeline signals, system metrics, and triggering interactive Monte Carlo model simulations.
 - Multi-timeframe evaluation with precise candle countdown timers.

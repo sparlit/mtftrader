@@ -152,3 +152,82 @@ mod tests {
         assert!(report.value_at_risk_95.is_finite());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EPSILON: f64 = 1e-6;
+
+    #[test]
+    fn always_winning_compounds_two_percent_per_trade() {
+        let report = simulate_monte_carlo(1000.0, 1.0, 10, 100);
+        let expected = 1000.0 * 1.02_f64.powi(10);
+
+        assert!((report.final_capital_mean - expected).abs() < EPSILON);
+        assert!((report.value_at_risk_95 - (1000.0 - expected)).abs() < EPSILON);
+    }
+
+    #[test]
+    fn always_losing_compounds_one_percent_per_trade() {
+        let report = simulate_monte_carlo(1000.0, 0.0, 10, 100);
+        let expected = 1000.0 * 0.99_f64.powi(10);
+
+        assert!((report.final_capital_mean - expected).abs() < EPSILON);
+        assert!((report.expected_shortfall_95 - (1000.0 - expected)).abs() < EPSILON);
+    }
+
+    #[test]
+    fn zero_trades_preserves_initial_capital() {
+        let report = simulate_monte_carlo(2500.0, 0.55, 0, 100);
+
+        assert!((report.final_capital_mean - 2500.0).abs() < EPSILON);
+        assert!(report.value_at_risk_95.abs() < EPSILON);
+        assert!(report.expected_shortfall_95.abs() < EPSILON);
+    }
+
+    #[test]
+    fn expected_shortfall_is_zero_when_tail_sample_is_empty() {
+        // With fewer than 20 simulations the 5% tail index rounds down to 0.
+        let report = simulate_monte_carlo(1000.0, 0.5, 20, 10);
+
+        assert_eq!(report.expected_shortfall_95, 0.0);
+    }
+
+    #[test]
+    fn report_echoes_initial_capital() {
+        let report = simulate_monte_carlo(7331.5, 0.6, 5, 50);
+
+        assert!((report.initial_capital - 7331.5).abs() < EPSILON);
+    }
+
+    #[test]
+    fn mixed_win_rate_keeps_mean_between_worst_and_best_paths() {
+        let num_trades = 40;
+        let report = simulate_monte_carlo(1000.0, 0.55, num_trades, 500);
+
+        let all_losses = 1000.0 * 0.99_f64.powi(num_trades as i32);
+        let all_wins = 1000.0 * 1.02_f64.powi(num_trades as i32);
+
+        assert!(report.final_capital_mean >= all_losses);
+        assert!(report.final_capital_mean <= all_wins);
+    }
+
+    #[test]
+    fn expected_shortfall_is_at_least_value_at_risk() {
+        let report = simulate_monte_carlo(1000.0, 0.5, 50, 1000);
+
+        assert!(report.expected_shortfall_95 >= report.value_at_risk_95 - EPSILON);
+    }
+
+    #[test]
+    fn report_round_trips_through_json() {
+        let report = simulate_monte_carlo(1000.0, 1.0, 3, 100);
+        let json = serde_json::to_string(&report).expect("serialization failed");
+        let parsed: RiskReport = serde_json::from_str(&json).expect("deserialization failed");
+
+        assert!((parsed.final_capital_mean - report.final_capital_mean).abs() < EPSILON);
+        assert!((parsed.value_at_risk_95 - report.value_at_risk_95).abs() < EPSILON);
+        assert!((parsed.expected_shortfall_95 - report.expected_shortfall_95).abs() < EPSILON);
+    }
+}

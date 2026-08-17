@@ -8,6 +8,7 @@
 #property version   "1.00"
 
 #include <Trade\AccountInfo.mqh>
+#include "Common.mqh"
 
 class CRiskBrain
 {
@@ -31,7 +32,6 @@ public:
    {
       CAccountInfo account;
       double balance = account.Balance();
-      double equity = account.Equity();
 
       if(balance <= 0.0)
       {
@@ -40,8 +40,7 @@ public:
       }
 
       // Drawdown Circuit Breaker
-      double dd = (balance - equity) / balance * 100.0;
-      if(dd >= m_maxDrawdownLimit)
+      if(!AllowTrade())
       {
          PrintFormat("RiskBrain: Drawdown Circuit Breaker Triggered! Drawdown %.2f%% >= limit %.2f%%.", dd, m_maxDrawdownLimit);
          return 0.0;
@@ -112,6 +111,7 @@ public:
 
       double dd = (balance - equity) / balance * 100.0;
       return (dd < m_maxDrawdownLimit);
+      return (AccountDrawdownPercent() < m_maxDrawdownLimit);
    }
 
    double GetMaxRisk() { return m_maxRiskPercent; }

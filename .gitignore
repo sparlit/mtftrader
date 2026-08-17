@@ -4,6 +4,9 @@ rust/target/
 # Python caching
 __pycache__/
 *.pyc
+.pytest_cache/
+.coverage
+.venv/
 
 # Local logs
 python/logs/

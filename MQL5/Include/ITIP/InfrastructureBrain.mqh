@@ -11,11 +11,13 @@ class CInfrastructureBrain
 {
 private:
    string m_url;
+   string m_apiKey;
 
 public:
-   CInfrastructureBrain(string host, int port)
+   CInfrastructureBrain(string host, int port, string apiKey = "")
    {
       m_url = StringFormat("http://%s:%d/api/signal", host, port);
+      m_apiKey = apiKey;
    }
 
    ~CInfrastructureBrain() {}
@@ -32,6 +34,10 @@ public:
       char result[];
       string requestHeaders = "Content-Type: application/json\r\n";
       string responseHeaders = "";
+      string headers = "Content-Type: application/json\r\n";
+      // Attach API key when the backend enforces auth (ITIP_API_KEY set).
+      if(StringLen(m_apiKey) > 0)
+         headers += StringFormat("X-API-Key: %s\r\n", m_apiKey);
 
       StringToCharArray(payload, post, 0, StringLen(payload));
 
