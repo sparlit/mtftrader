@@ -26,14 +26,31 @@ public:
 
    ~CRiskBrain() {}
 
+   void SetRiskParameters(double maxRiskPercent, double maxDrawdownLimit)
+   {
+      if(maxRiskPercent > 0.0) m_maxRiskPercent = maxRiskPercent;
+      if(maxDrawdownLimit > 0.0) m_maxDrawdownLimit = maxDrawdownLimit;
+   }
+
+   double CurrentDrawdownPercent()
+   {
+      CAccountInfo account;
+      double balance = account.Balance();
+      if(balance <= 0.0) return 100.0;
+
+      double equity = account.Equity();
+      return (balance - equity) / balance * 100.0;
+   }
+
    double CalculatePositionSize(double slPoints, double atr)
    {
       CAccountInfo account;
       double balance = account.Balance();
-      double equity = account.Equity();
+      if(balance <= 0.0) return 0.0;
 
       // Drawdown Circuit Breaker
-      double dd = (balance - equity) / balance * 100.0;
+      double dd = CurrentDrawdownPercent();
+      m_dailyDrawdown = dd;
       if(dd >= m_maxDrawdownLimit)
       {
          Print("RiskBrain: Drawdown Circuit Breaker Triggered!");
@@ -61,7 +78,7 @@ public:
       double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
       double stepLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
 
-      lotSize = MathFloor(lotSize / stepLot) * stepLot;
+      if(stepLot > 0.0) lotSize = MathFloor(lotSize / stepLot) * stepLot;
 
       if(lotSize < minLot) lotSize = minLot;
       if(lotSize > maxLot) lotSize = maxLot;
@@ -71,13 +88,11 @@ public:
 
    bool AllowTrade()
    {
-      CAccountInfo account;
-      double balance = account.Balance();
-      double equity = account.Equity();
-      double dd = (balance - equity) / balance * 100.0;
-      return (dd < m_maxDrawdownLimit);
+      m_dailyDrawdown = CurrentDrawdownPercent();
+      return (m_dailyDrawdown < m_maxDrawdownLimit);
    }
 
    double GetMaxRisk() { return m_maxRiskPercent; }
    double GetCircuitBreaker() { return m_maxDrawdownLimit; }
+   double GetDailyDrawdown() { return m_dailyDrawdown; }
 };

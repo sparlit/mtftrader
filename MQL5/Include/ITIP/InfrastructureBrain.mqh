@@ -31,11 +31,12 @@ public:
       char post[];
       char result[];
       string headers = "Content-Type: application/json\r\n";
+      string resultHeaders = "";
 
       StringToCharArray(payload, post, 0, StringLen(payload));
 
       // Perform asynchronous native web request to pipeline analytics to python
-      int res = WebRequest("POST", m_url, headers, 1000, post, result, headers);
+      int res = WebRequest("POST", m_url, headers, 1000, post, result, resultHeaders);
       if(res == -1)
       {
          // Log internally or handle offline status gracefully

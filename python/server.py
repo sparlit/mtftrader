@@ -1,10 +1,14 @@
-import time
+import csv
+import html
 import json
 import os
 import random
-from fastapi import FastAPI, HTTPException
+import time
+from typing import Any, Dict, List, Optional
+
+from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 app = FastAPI(title="ITIP AI & Analytics Backend v1.0")
 
@@ -14,24 +18,54 @@ os.makedirs(LOG_DIR, exist_ok=True)
 CSV_PATH = os.path.join(LOG_DIR, "signals_log.csv")
 JSON_PATH = os.path.join(LOG_DIR, "signals_log.json")
 
+CSV_COLUMNS = [
+    "timestamp",
+    "symbol",
+    "timeframe",
+    "direction",
+    "confidence",
+    "session",
+    "atr",
+    "rsi",
+]
+
 # Create CSV header if it doesn't exist
 if not os.path.exists(CSV_PATH):
-    with open(CSV_PATH, "w") as f:
-        f.write("timestamp,symbol,timeframe,direction,confidence,session,atr,rsi\n")
+    with open(CSV_PATH, "w", newline="") as f:
+        csv.writer(f).writerow(CSV_COLUMNS)
 
 class SignalRequest(BaseModel):
-    symbol: str
-    timeframe: str
-    direction: str
-    confidence: float
-    session: str
-    atr: float
-    rsi: float
+    symbol: str = Field(min_length=1, max_length=32)
+    timeframe: str = Field(min_length=1, max_length=16)
+    direction: str = Field(min_length=1, max_length=16)
+    confidence: float = Field(ge=0.0, le=100.0)
+    session: str = Field(min_length=1, max_length=32)
+    atr: float = Field(ge=0.0)
+    rsi: float = Field(ge=0.0, le=100.0)
 
 class TradeStats(BaseModel):
     win_rate: float
     profit_factor: float
     max_drawdown: float
+
+
+def read_signals() -> List[Dict[str, Any]]:
+    """Return the logged signals, tolerating a missing or corrupt JSON log."""
+    if not os.path.exists(JSON_PATH):
+        return []
+    try:
+        with open(JSON_PATH, "r") as f:
+            data = json.load(f)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [entry for entry in data if isinstance(entry, dict)]
+
+
+def write_signals(signals: List[Dict[str, Any]]) -> None:
+    with open(JSON_PATH, "w") as f:
+        json.dump(signals, f, indent=4)
 
 @app.get("/")
 def read_root():
@@ -47,11 +81,6 @@ def read_root():
 def log_signal(req: SignalRequest):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
 
-    # Save to CSV
-    with open(CSV_PATH, "a") as f:
-        f.write(f"{timestamp},{req.symbol},{req.timeframe},{req.direction},{req.confidence},{req.session},{req.atr},{req.rsi}\n")
-
-    # Save to JSON
     signal_data = {
         "timestamp": timestamp,
         "symbol": req.symbol,
@@ -63,19 +92,68 @@ def log_signal(req: SignalRequest):
         "rsi": req.rsi
     }
 
-    existing_data = []
-    if os.path.exists(JSON_PATH):
-        try:
-            with open(JSON_PATH, "r") as f:
-                existing_data = json.load(f)
-        except Exception:
-            pass
+    # Save to CSV (csv.writer quotes separators so one signal stays one row)
+    with open(CSV_PATH, "a", newline="") as f:
+        csv.writer(f).writerow([signal_data[column] for column in CSV_COLUMNS])
 
-    existing_data.append(signal_data)
-    with open(JSON_PATH, "w") as f:
-        json.dump(existing_data, f, indent=4)
+    # Save to JSON
+    signals = read_signals()
+    signals.append(signal_data)
+    write_signals(signals)
 
     return {"status": "SUCCESS", "message": "Signal logged", "data": signal_data}
+
+@app.get("/api/signals")
+def list_signals(
+    limit: int = Query(50, ge=1, le=500),
+    symbol: Optional[str] = None,
+    direction: Optional[str] = None,
+):
+    signals = read_signals()
+    if symbol:
+        signals = [
+            s for s in signals if str(s.get("symbol", "")).upper() == symbol.upper()
+        ]
+    if direction:
+        signals = [
+            s
+            for s in signals
+            if str(s.get("direction", "")).upper() == direction.upper()
+        ]
+
+    newest_first = list(reversed(signals))[:limit]
+    return {"count": len(newest_first), "total": len(signals), "signals": newest_first}
+
+@app.get("/api/stats")
+def get_signal_stats():
+    signals = read_signals()
+
+    by_direction: Dict[str, int] = {}
+    by_symbol: Dict[str, int] = {}
+    confidences: List[float] = []
+    latest_timestamp = None
+    for signal in signals:
+        latest_timestamp = signal.get("timestamp", latest_timestamp)
+
+        direction = str(signal.get("direction", "UNKNOWN")).upper()
+        by_direction[direction] = by_direction.get(direction, 0) + 1
+
+        symbol = str(signal.get("symbol", "UNKNOWN")).upper()
+        by_symbol[symbol] = by_symbol.get(symbol, 0) + 1
+
+        confidence = signal.get("confidence")
+        if isinstance(confidence, (int, float)):
+            confidences.append(float(confidence))
+
+    return {
+        "total_signals": len(signals),
+        "by_direction": by_direction,
+        "by_symbol": by_symbol,
+        "average_confidence": (
+            round(sum(confidences) / len(confidences), 2) if confidences else 0.0
+        ),
+        "latest_timestamp": latest_timestamp,
+    }
 
 @app.get("/api/correlation")
 def get_portfolio_correlation():
@@ -92,54 +170,62 @@ def get_portfolio_correlation():
     return {"correlation_matrix": matrix}
 
 @app.get("/api/monte_carlo")
-def run_monte_carlo(simulations: int = 1000, initial_capital: float = 10000.0, win_rate: float = 0.55):
+def run_monte_carlo(
+    # Caps keep a single request well under a second of pure-Python looping
+    simulations: int = Query(1000, ge=1, le=10000),
+    initial_capital: float = Query(10000.0, gt=0),
+    win_rate: float = Query(0.55, ge=0.0, le=1.0),
+    trades: int = Query(50, ge=1, le=200),
+):
     results = []
     for _ in range(simulations):
         capital = initial_capital
-        for _ in range(50): # 50 trades path
+        for _ in range(trades):
             if random.random() < win_rate:
                 capital += capital * 0.02 # 2% win
             else:
                 capital -= capital * 0.01 # 1% loss
         results.append(capital)
 
+    results.sort()
     avg_ending = sum(results) / len(results)
-    max_ending = max(results)
-    min_ending = min(results)
+    median_ending = results[len(results) // 2]
+    profitable = sum(1 for capital in results if capital > initial_capital)
 
     return {
         "simulations": simulations,
         "initial_capital": initial_capital,
+        "trades_per_path": trades,
         "average_ending_capital": round(avg_ending, 2),
-        "max_ending_capital": round(max_ending, 2),
-        "min_ending_capital": round(min_ending, 2)
+        "median_ending_capital": round(median_ending, 2),
+        "max_ending_capital": round(results[-1], 2),
+        "min_ending_capital": round(results[0], 2),
+        "probability_of_profit": round(profitable / len(results), 4)
     }
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def get_web_dashboard():
-    # Read raw signals for visualization
-    signals = []
-    if os.path.exists(JSON_PATH):
-        try:
-            with open(JSON_PATH, "r") as f:
-                signals = json.load(f)
-        except Exception:
-            pass
+    # Read raw signals for visualization, newest first
+    signals = list(reversed(read_signals()))
 
-    # Reverse signals to show newest first
-    signals.reverse()
     signals_html = ""
     for s in signals[:10]: # show latest 10 signals
-        dir_class = "text-emerald-500" if "BUY" in s["direction"].upper() else "text-rose-500"
+        cell = {
+            key: html.escape(str(s.get(key, "")))
+            for key in ("timestamp", "symbol", "timeframe", "direction", "confidence", "session", "atr")
+        }
+        dir_class = (
+            "text-emerald-500" if "BUY" in cell["direction"].upper() else "text-rose-500"
+        )
         signals_html += f"""
         <tr class="border-b border-slate-700 bg-slate-900/40">
-            <td class="p-3 text-slate-400">{s["timestamp"]}</td>
-            <td class="p-3 font-semibold text-slate-100">{s["symbol"]}</td>
-            <td class="p-3 text-slate-300">{s["timeframe"]}</td>
-            <td class="p-3 font-bold {dir_class}">{s["direction"]}</td>
-            <td class="p-3 text-cyan-400 font-semibold">{s["confidence"]}%</td>
-            <td class="p-3 text-slate-300">{s["session"]}</td>
-            <td class="p-3 text-slate-400">{s["atr"]}</td>
+            <td class="p-3 text-slate-400">{cell["timestamp"]}</td>
+            <td class="p-3 font-semibold text-slate-100">{cell["symbol"]}</td>
+            <td class="p-3 text-slate-300">{cell["timeframe"]}</td>
+            <td class="p-3 font-bold {dir_class}">{cell["direction"]}</td>
+            <td class="p-3 text-cyan-400 font-semibold">{cell["confidence"]}%</td>
+            <td class="p-3 text-slate-300">{cell["session"]}</td>
+            <td class="p-3 text-slate-400">{cell["atr"]}</td>
         </tr>
         """
     if not signals_html:
@@ -184,8 +270,8 @@ def get_web_dashboard():
                     <span class="text-2xl font-bold text-emerald-400">ONLINE</span>
                 </div>
                 <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col space-y-2">
-                    <span class="text-xs text-slate-400 uppercase tracking-wider font-semibold">Active Engine Threads</span>
-                    <span class="text-2xl font-bold text-slate-100">8 (DPI-Aware)</span>
+                    <span class="text-xs text-slate-400 uppercase tracking-wider font-semibold">Signals Logged</span>
+                    <span id="totalSignals" class="text-2xl font-bold text-slate-100">{len(signals)}</span>
                 </div>
                 <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col space-y-2">
                     <span class="text-xs text-slate-400 uppercase tracking-wider font-semibold">Active Timeframes</span>
@@ -201,7 +287,7 @@ def get_web_dashboard():
             <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800">
                 <div class="flex justify-between items-center mb-4">
                     <h2 class="text-lg font-bold text-white tracking-wide">Live Algorithmic Signal Logs</h2>
-                    <span class="text-xs text-slate-400">Auto-refreshing on new ticks</span>
+                    <span class="text-xs text-slate-400">Auto-refreshing every 10s</span>
                 </div>
                 <div class="overflow-x-auto rounded-lg border border-slate-800">
                     <table class="w-full text-left border-collapse">
@@ -216,7 +302,7 @@ def get_web_dashboard():
                                 <th class="p-3">ATR (14)</th>
                             </tr>
                         </thead>
-                        <tbody>
+                        <tbody id="signalsBody">
                             {signals_html}
                         </tbody>
                     </table>
@@ -263,6 +349,11 @@ def get_web_dashboard():
                 const win_rate = document.getElementById('win_rate').value;
 
                 const response = await fetch(`/api/monte_carlo?initial_capital=${{capital}}&win_rate=${{win_rate}}`);
+                if (!response.ok) {{
+                    document.getElementById('resultsContent').innerHTML =
+                        '<p class="text-rose-400 text-sm">Invalid inputs: capital must be positive and win rate between 0 and 1.</p>';
+                    return;
+                }}
                 const data = await response.json();
 
                 document.getElementById('resultsContent').innerHTML = `
@@ -280,12 +371,75 @@ def get_web_dashboard():
                             <span class="text-xl font-bold text-rose-400">$${{data.min_ending_capital}}</span>
                         </div>
                         <div class="p-4 bg-slate-950 rounded-xl border border-slate-800">
+                            <span class="block text-xs text-slate-400 mb-1">Probability Of Profit</span>
+                            <span class="text-xl font-bold text-cyan-400">${{(data.probability_of_profit * 100).toFixed(1)}}%</span>
+                        </div>
+                        <div class="p-4 bg-slate-950 rounded-xl border border-slate-800">
                             <span class="block text-xs text-slate-400 mb-1">Runs Simulated</span>
                             <span class="text-xl font-bold text-slate-300">${{data.simulations}}</span>
                         </div>
                     </div>
                 `;
             }});
+
+            const SIGNAL_COLUMNS = ['timestamp', 'symbol', 'timeframe', 'direction', 'confidence', 'session', 'atr'];
+            const COLUMN_CLASSES = {{
+                timestamp: 'p-3 text-slate-400',
+                symbol: 'p-3 font-semibold text-slate-100',
+                timeframe: 'p-3 text-slate-300',
+                direction: 'p-3 font-bold',
+                confidence: 'p-3 text-cyan-400 font-semibold',
+                session: 'p-3 text-slate-300',
+                atr: 'p-3 text-slate-400'
+            }};
+
+            async function refreshSignals() {{
+                let payload;
+                try {{
+                    const response = await fetch('/api/signals?limit=10');
+                    if (!response.ok) return;
+                    payload = await response.json();
+                }} catch (err) {{
+                    return; // keep the last rendered snapshot when the backend is unreachable
+                }}
+
+                document.getElementById('totalSignals').textContent = payload.total;
+
+                const body = document.getElementById('signalsBody');
+                body.replaceChildren();
+
+                if (!payload.signals.length) {{
+                    const row = document.createElement('tr');
+                    const cell = document.createElement('td');
+                    cell.colSpan = 7;
+                    cell.className = 'p-4 text-center text-slate-500';
+                    cell.textContent = 'No active signal logs yet. Run the MT5 EA to populate signals.';
+                    row.appendChild(cell);
+                    body.appendChild(row);
+                    return;
+                }}
+
+                for (const signal of payload.signals) {{
+                    const row = document.createElement('tr');
+                    row.className = 'border-b border-slate-700 bg-slate-900/40';
+                    const direction = String(signal.direction || '').toUpperCase();
+                    for (const column of SIGNAL_COLUMNS) {{
+                        const cell = document.createElement('td');
+                        cell.className = COLUMN_CLASSES[column];
+                        if (column === 'direction') {{
+                            cell.className += direction.includes('BUY') ? ' text-emerald-500' : ' text-rose-500';
+                        }}
+                        // textContent (not innerHTML) so logged values can never inject markup
+                        cell.textContent = column === 'confidence'
+                            ? `${{signal.confidence}}%`
+                            : String(signal[column] ?? '');
+                        row.appendChild(cell);
+                    }}
+                    body.appendChild(row);
+                }}
+            }}
+
+            setInterval(refreshSignals, 10000);
         </script>
     </body>
     </html>
