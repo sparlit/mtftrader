@@ -44,10 +44,11 @@ public:
       int bearishCount = 0;
       int tfChecked = 0;
 
-      for(int i = 0; i < 8; i++)
+      for(int i = 0; i < ITIP_TF_COUNT; i++)
       {
-         if(market.timeframes[i].rsiVal > 55) bullishCount++;
-         else if(market.timeframes[i].rsiVal < 45) bearishCount++;
+         string bias = BiasFromRSI(market.timeframes[i].rsiVal);
+         if(bias == ITIP_BIAS_BULLISH) bullishCount++;
+         else if(bias == ITIP_BIAS_BEARISH) bearishCount++;
          tfChecked++;
       }
 
