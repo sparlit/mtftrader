@@ -1,28 +1,74 @@
 import time
 import random
 from fastapi import FastAPI
+import json
+import os
+import csv
+import html
+import secrets
+import random
+from typing import Optional
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from signal_store import append_signal, init_store, read_signals
 
 app = FastAPI(title="ITIP AI & Analytics Backend v1.0")
 
 init_store()
+CSV_COLUMNS = [
+    "timestamp", "symbol", "timeframe", "direction",
+    "confidence", "session", "atr", "rsi",
+]
+
+# Optional API key auth. When ITIP_API_KEY is set, state-changing / expensive
+# endpoints require a matching X-API-Key header. Left unset only for local dev.
+API_KEY = os.environ.get("ITIP_API_KEY")
+
+
+def require_api_key(x_api_key: Optional[str] = Header(default=None)):
+    """Enforce API key auth when ITIP_API_KEY is configured."""
+    if not API_KEY:
+        return
+    if not x_api_key or not secrets.compare_digest(x_api_key, API_KEY):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API key",
+        )
+
+
+def _csv_safe(value: str) -> str:
+    """Neutralize spreadsheet formula injection in CSV cells."""
+    if value and value[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
+
+
+# Create CSV header if it doesn't exist
+if not os.path.exists(CSV_PATH):
+    with open(CSV_PATH, "w", newline="") as f:
+        csv.writer(f).writerow(CSV_COLUMNS)
+
+# Restrict free-text fields: printable, no separators/control chars that could
+# corrupt logs or be reflected into the dashboard.
+_TEXT = dict(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9_.\- ]+$")
+
 
 class SignalRequest(BaseModel):
-    symbol: str
-    timeframe: str
-    direction: str
-    confidence: float
-    session: str
-    atr: float
-    rsi: float
+    symbol: str = Field(**_TEXT)
+    timeframe: str = Field(**_TEXT)
+    direction: str = Field(**_TEXT)
+    confidence: float = Field(ge=0.0, le=100.0)
+    session: str = Field(**_TEXT)
+    atr: float = Field(ge=0.0, le=1e9)
+    rsi: float = Field(ge=0.0, le=100.0)
+
 
 class TradeStats(BaseModel):
-    win_rate: float
-    profit_factor: float
-    max_drawdown: float
+    win_rate: float = Field(ge=0.0, le=1.0)
+    profit_factor: float = Field(ge=0.0)
+    max_drawdown: float = Field(ge=0.0)
 
 @app.get("/")
 def read_root():
@@ -38,6 +84,41 @@ def read_root():
 def log_signal(req: SignalRequest):
     signal = dict(req.model_dump(), timestamp=time.strftime("%Y-%m-%d %H:%M:%S"))
     stored = append_signal(signal)
+def log_signal(req: SignalRequest, _: None = Depends(require_api_key)):
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    # Save to CSV (csv module quotes fields; _csv_safe blocks formula injection)
+    with open(CSV_PATH, "a", newline="") as f:
+        csv.writer(f).writerow([
+            timestamp,
+            _csv_safe(req.symbol),
+            _csv_safe(req.timeframe),
+            _csv_safe(req.direction),
+            req.confidence,
+            _csv_safe(req.session),
+            req.atr,
+            req.rsi,
+        ])
+
+    # Save to JSON
+    signal_data = {
+        "timestamp": timestamp,
+        "symbol": req.symbol,
+        "timeframe": req.timeframe,
+        "direction": req.direction,
+        "confidence": req.confidence,
+        "session": req.session,
+        "atr": req.atr,
+        "rsi": req.rsi
+    }
+
+    existing_data = []
+    if os.path.exists(JSON_PATH):
+        try:
+            with open(JSON_PATH, "r") as f:
+                existing_data = json.load(f)
+        except Exception:
+            pass
 
     return {"status": "SUCCESS", "message": "Signal logged", "data": stored}
 
@@ -56,7 +137,11 @@ def get_portfolio_correlation():
     return {"correlation_matrix": matrix}
 
 @app.get("/api/monte_carlo")
-def run_monte_carlo(simulations: int = 1000, initial_capital: float = 10000.0, win_rate: float = 0.55):
+def run_monte_carlo(
+    simulations: int = Query(1000, ge=1, le=100000),
+    initial_capital: float = Query(10000.0, gt=0.0, le=1e12),
+    win_rate: float = Query(0.55, ge=0.0, le=1.0),
+):
     results = []
     for _ in range(simulations):
         capital = initial_capital
@@ -94,16 +179,20 @@ def get_web_dashboard():
     signals.reverse()
     signals_html = ""
     for s in signals[:10]: # show latest 10 signals
-        dir_class = "text-emerald-500" if "BUY" in s["direction"].upper() else "text-rose-500"
+        direction = str(s.get("direction", ""))
+        dir_class = "text-emerald-500" if "BUY" in direction.upper() else "text-rose-500"
+        # Escape every field: stored values are attacker-controllable via /api/signal.
+        esc = {k: html.escape(str(s.get(k, ""))) for k in
+               ("timestamp", "symbol", "timeframe", "direction", "confidence", "session", "atr")}
         signals_html += f"""
         <tr class="border-b border-slate-700 bg-slate-900/40">
-            <td class="p-3 text-slate-400">{s["timestamp"]}</td>
-            <td class="p-3 font-semibold text-slate-100">{s["symbol"]}</td>
-            <td class="p-3 text-slate-300">{s["timeframe"]}</td>
-            <td class="p-3 font-bold {dir_class}">{s["direction"]}</td>
-            <td class="p-3 text-cyan-400 font-semibold">{s["confidence"]}%</td>
-            <td class="p-3 text-slate-300">{s["session"]}</td>
-            <td class="p-3 text-slate-400">{s["atr"]}</td>
+            <td class="p-3 text-slate-400">{esc["timestamp"]}</td>
+            <td class="p-3 font-semibold text-slate-100">{esc["symbol"]}</td>
+            <td class="p-3 text-slate-300">{esc["timeframe"]}</td>
+            <td class="p-3 font-bold {dir_class}">{esc["direction"]}</td>
+            <td class="p-3 text-cyan-400 font-semibold">{esc["confidence"]}%</td>
+            <td class="p-3 text-slate-300">{esc["session"]}</td>
+            <td class="p-3 text-slate-400">{esc["atr"]}</td>
         </tr>
         """
     stats_html = "".join([
@@ -243,4 +332,7 @@ def get_web_dashboard():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=5555)
+    # Bind to loopback by default; set ITIP_HOST=0.0.0.0 to expose deliberately.
+    host = os.environ.get("ITIP_HOST", "127.0.0.1")
+    port = int(os.environ.get("ITIP_PORT", "5555"))
+    uvicorn.run(app, host=host, port=port)
